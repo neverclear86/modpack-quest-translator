@@ -1,5 +1,6 @@
 import { assert, assertEquals } from "@std/assert";
 import { writeFileAtomic } from "../src/util/fs.ts";
+import { VERSION } from "../src/version.ts";
 
 Deno.test("the tool targets Deno 2 and nothing older", () => {
   const major = Number(Deno.version.deno.split(".")[0]);
@@ -24,4 +25,14 @@ Deno.test("the durability flush runs on every atomic write", async () => {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("the version the tool stamps into artefacts is the package version", async () => {
+  // VERSION reaches users: it is the toolVersion in every overlay manifest,
+  // every bundle manifest and every backup sidecar. Letting it drift from
+  // deno.json would make those artefacts lie about which build produced them.
+  const config = JSON.parse(
+    await Deno.readTextFile(new URL("../deno.json", import.meta.url)),
+  );
+  assertEquals(config.version, VERSION);
 });

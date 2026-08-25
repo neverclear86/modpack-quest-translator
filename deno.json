@@ -1,9 +1,9 @@
 {
   "name": "modpack-quest-translator",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "exports": "./src/cli/main.ts",
   "tasks": {
-    "check": "deno check src/cli/main.ts src/installer/main.ts src/packager/main.ts",
+    "check": "deno check src/cli/main.ts src/installer/main.ts src/packager/main.ts tools/bundle_e2e.ts",
     "test": "deno test -A",
     "fmt": "deno fmt",
     "lint": "deno lint",
