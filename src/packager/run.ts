@@ -45,6 +45,7 @@ export async function runPackager(
     }
 
     const overlay = await readRequired(options.overlay, "--overlay");
+    const sourceArchive = await readRequired(options.sourceArchive, "--source-archive");
     const bundleId = options.bundleId ?? defaultBundleId(options.overlay);
     const binaries = await collectBinaries(options);
 
@@ -57,6 +58,7 @@ export async function runPackager(
       toolVersion: VERSION,
       ...(options.generatedAt !== undefined ? { generatedAt: options.generatedAt } : {}),
       binaries,
+      sourceArchive,
       ...(manifestText !== undefined ? { translationManifest: manifestText } : {}),
       ...(reportText !== undefined ? { translationReport: reportText } : {}),
     });

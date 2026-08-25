@@ -507,22 +507,25 @@ deno task build:installers          # both of the above
 
 # package an existing overlay with binaries you already built
 deno task package-installer \
-  --overlay  ./dist/aca-2.4-ja_jp-en_us-override.zip \
-  --output   ./dist \
-  --binaries ./dist/bin
+  --overlay        ./dist/aca-2.4-ja_jp-en_us-override.zip \
+  --source-archive ./aca-v2.4.zip \
+  --output         ./dist \
+  --binaries       ./dist/bin
 
 # build both binaries and package in one go; extra flags go to the packager
 deno task bundle \
-  --overlay ./dist/aca-2.4-ja_jp-en_us-override.zip \
-  --output  ./dist
+  --overlay        ./dist/aca-2.4-ja_jp-en_us-override.zip \
+  --source-archive ./aca-v2.4.zip \
+  --output         ./dist
 ```
 
 `deno task bundle` is `build:installers` followed by `package-installer --binaries dist/bin`, so it
-needs only `--overlay` and `--output`.
+needs `--overlay`, `--source-archive` and `--output`.
 
 | Flag                                               | Behaviour                                                                                                                   |
 | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `--overlay <zip>`                                  | Required. The raw overlay archive from a translation run                                                                    |
+| `--source-archive <zip>`                           | Required. The modpack archive that run read, byte for byte. See below                                                       |
 | `--output <zip\|dir>`                              | Required. A `.zip` path is that exact file; anything else is a directory, written as `<bundle-id>-installer.zip`            |
 | `--binaries <dir>`                                 | Directory holding the compiled installers, as produced by `deno task build:installers`                                      |
 | `--linux-binary <path>`, `--windows-binary <path>` | Explicit paths, overriding `--binaries`                                                                                     |
@@ -536,17 +539,26 @@ The packager copies **only** entries the overlay holds under `config/ftbquests/q
 anything else is refused with exit code 10. On its own that allowlist would not stop the pack's own
 `en_us.snbt` — it lives in that directory too — so before a byte is copied the overlay also has to
 be recognisable as a finished run of this tool: both translation sidecars present and this tool's,
-locales that differ, an empty `failed` list, and a payload whose per-key digests are **not** the
-ones the run recorded for the text it read. A file that digests to the source key for key is the
-source, and is refused. `--generated-at` overrides only the timestamp; it is not a way past the
-check.
+locales that differ, and an empty `failed` list.
 
-That is what keeps the pack's own English prose out of a bundle. It is not a signature and is not
-claimed as one — a manifest is a JSON file, and someone determined to lie can write one that agrees
-with a payload they also wrote. What it makes impossible is the accident, which is the failure this
-project actually has. The same goes for the bundle's own digests: `bundle-manifest.json` sits beside
-the payload it describes, so its SHA-256 entries catch a corrupt download rather than a deliberate
-edit, and the bundle README says so in both languages.
+The check that actually matters, though, cannot be made from the overlay alone. `sourceKeyDigests`
+is the manifest's own account of text it read, and comparing a payload against that account proves
+nothing: whoever writes the payload writes the manifest beside it, so setting every digest to a
+string the payload cannot produce is enough to have the pack's own prose packaged as a translation.
+That is why `--source-archive` is required. The packager hashes it, refuses it unless it is the
+archive the run recorded, finds the quest lang file inside it with the same rules the run used,
+recomputes every per-key digest from those bytes, and refuses any manifest that disagrees — key
+counts included. Only then is the payload compared, against the source **as read** rather than as
+described: same keys, and not the same text. `--generated-at` overrides only the timestamp; it is
+not a way past any of it.
+
+That is what keeps the pack's own English prose out of a bundle, and the guarantee is _relative to
+the archive you supply_. It establishes "this payload is a translation of the quest file in that
+archive", not "that archive is what the pack's author released" — hand it a fabricated archive and a
+manifest that agrees with it, and the two will agree. Establishing the second needs a signed
+provenance scheme this project does not have. The same limit applies to the bundle's own digests:
+`bundle-manifest.json` sits beside the payload it describes, so its SHA-256 entries catch a corrupt
+download rather than a deliberate edit, and the bundle README says so in both languages.
 
 Packaging the same overlay with the same binaries twice is byte-identical — the ZIP writer sorts
 entries and fixes timestamps, and `generatedAt` comes from the translation run rather than the
@@ -557,8 +569,11 @@ clock.
 ### The bundle acceptance gate
 
 ```bash
-deno task e2e:bundle                                  # translate a fixture pack, then package it
-deno task e2e:bundle --overlay ./dist/some-pack.zip   # package an overlay you already have
+# translate a fixture pack, then package it
+deno task e2e:bundle
+
+# package an overlay you already have, against the archive its run read
+deno task e2e:bundle --overlay ./dist/some-pack.zip --source-archive ./aca-v2.4.zip
 ```
 
 Deliberately not a `deno test`: it spawns real processes and runs the real compiled Linux binary

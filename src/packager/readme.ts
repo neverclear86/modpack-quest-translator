@@ -146,9 +146,13 @@ ${binaryRows}| \`payload/\` | the translated file${targets.length === 1 ? "" : "
 
 The pack's own ${manifest.sourceLocale} text is **not** in this bundle. The
 \`containsSourceProse: false\` in \`bundle-manifest.json\` is a check rather than a promise: the
-packager re-reads the translated file key by key against the digests the translation run recorded
-for the text it read, and refuses to build a bundle whose payload is still that original prose.
-Like every digest here, that stops the mistake, not a forger.
+packager is handed the modpack archive the translation was made from, checks its digest against
+the one the run recorded, reads the pack's own quest file back out of it, and compares the payload
+against that file key by key. A payload that is still the original prose is refused, whatever the
+manifest beside it claims. What that establishes is *relative to the archive supplied* -- it says
+the payload is a translation of that file, not that the archive is what the pack's author
+released. Nothing here is signed, so like every digest in this bundle it stops a mistake, not a
+forger.
 
 このモッドパック本来の ${manifest.sourceLocale} の文章はこの配布物には含まれていません。
 

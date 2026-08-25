@@ -1,7 +1,10 @@
 import { AppError } from "../errors.ts";
+import { discoverQuestSource } from "../archive/discover.ts";
+import { readZip } from "../archive/zip/reader.ts";
 import { shippedLangPath } from "../installer/bundle.ts";
 import { digestByKey } from "../quests/digest.ts";
 import { ftbQuestsLangAdapter } from "../quests/ftbquests_lang.ts";
+import { sha256Hex } from "../util/hash.ts";
 
 export const TRANSLATION_MANIFEST_NAME = "translation-manifest.json";
 export const TRANSLATION_REPORT_NAME = "translation-report.json";
@@ -28,35 +31,49 @@ function refuse(message: string, hint?: string): AppError {
 }
 
 const REBUILD =
-  "Point --overlay at an archive a translation run produced, and --manifest/--report at the " +
-  "sidecars it wrote beside it.";
+  "Point --overlay at an archive a translation run produced, --manifest/--report at the " +
+  "sidecars it wrote beside it, and --source-archive at the modpack archive that run read.";
+
+const SOURCE_HINT =
+  "--source-archive has to be the modpack archive the translation run read, byte for byte. " +
+  "Its sha256 is recorded in the run's own manifest.";
 
 /**
  * Decide whether an overlay is a translation this tool produced, before a byte
  * of it is copied into a bundle.
  *
  * **What this can prove.** The overlay carries the manifest and report the
- * translation run wrote, they agree with each other, they describe a run that
- * finished, and -- the load-bearing one -- the payload is *not* the source the
- * manifest recorded. The run stores a digest per SNBT key of the text it read;
- * re-computing those over the payload with the same function and finding every
- * one unchanged means the file is the pack's own prose wearing a translation's
- * manifest.
+ * translation run wrote, they agree with each other, and they describe a run
+ * that finished. Then the load-bearing part: the caller has to hand over the
+ * modpack archive the run read, its bytes have to hash to the digest the
+ * manifest recorded for it, and the source quest file is re-found and re-read
+ * *out of that archive*. Every per-key digest the manifest claims for the
+ * source is recomputed from those bytes and has to match, as do the key and
+ * string counts -- so a manifest that lies about what the source said is
+ * refused rather than believed. Finally the payload is compared against the
+ * source as independently read: same keys, and not the same text.
  *
- * **What this cannot prove.** Nothing here is a signature. A manifest is a JSON
- * file, and someone determined to lie can write one that agrees with a payload
- * they also wrote. What it does do is make the *accident* -- pointing --overlay
- * at the pack's own `en_us.snbt`, or at a half-finished run -- mechanically
- * impossible, and that is the failure mode this project actually has. The
- * bundle README says as much rather than leaving `containsSourceProse: false`
- * to imply more.
+ * That closes the hole a metadata-only check leaves open. Nothing in the
+ * overlay is evidence about the source, because whoever writes the payload
+ * writes the manifest beside it; the archive is evidence, because its digest
+ * pins it and its contents are read rather than described.
+ *
+ * **What this cannot prove.** Nothing here is a signature, and the guarantee is
+ * *relative to the archive supplied*. Hand it a fabricated modpack archive and
+ * a manifest that agrees with it, and the two will agree -- what is established
+ * is "this payload is a translation of the file in that archive", not "that
+ * archive is what the publisher released". Establishing the second needs a
+ * signed provenance scheme this project does not have, and the bundle README
+ * says so rather than leaving `containsSourceProse: false` to imply it.
  */
-export function verifyTranslationProvenance(args: {
+export async function verifyTranslationProvenance(args: {
   manifestText: string | undefined;
   reportText: string | undefined;
   /** Install target → payload bytes, as gathered from the overlay. */
   payloads: ReadonlyMap<string, Uint8Array>;
-}): TranslationFacts {
+  /** The modpack archive the translation run read. Required; see above. */
+  sourceArchive: Uint8Array;
+}): Promise<TranslationFacts> {
   if (args.manifestText === undefined) {
     throw refuse(
       `The overlay has no ${TRANSLATION_MANIFEST_NAME}, so there is no way to tell a ` +
@@ -115,7 +132,10 @@ export function verifyTranslationProvenance(args: {
 
   assertSomethingWasTranslated(manifest.keyCounts);
   assertRunFinished(args.reportText, targetLocale);
-  assertPayloadIsNotTheSource(manifest.sourceKeyDigests, args.payloads.get(expected)!);
+
+  const source = await readRecordedSource(manifest, sourceLocale, args.sourceArchive);
+  assertManifestDescribesTheSource(manifest, source);
+  assertPayloadIsATranslationOf(source, args.payloads.get(expected)!);
 
   const pack = isObject(manifest.pack) ? manifest.pack : {};
   return {
@@ -196,15 +216,99 @@ function assertRunFinished(reportText: string | undefined, targetLocale: string)
   }
 }
 
+/** The source quest file, as read out of the archive rather than described. */
+interface ReadSource {
+  path: string;
+  digests: Record<string, string>;
+  keyCount: number;
+  unitCount: number;
+}
+
 /**
- * The one check that stands between the pack's own prose and `payload/`.
+ * Find and read the source quest file inside the archive the run recorded.
  *
- * The run recorded a digest per SNBT key of the text it *read*. Re-computing
- * them over the payload with the same function must produce the same key set --
- * a translation preserves keys -- and must not reproduce every digest, because
- * a file that digests to the source, key for key, *is* the source.
+ * The archive is pinned by digest first, so "the source" is a specific pile of
+ * bytes and not whatever was handed over. The file inside it is then rediscovered
+ * with the same rules the translation run used, and the path the manifest claims
+ * has to be one of the ones that search actually turned up -- a manifest cannot
+ * point the reader at a file of its own choosing.
  */
-function assertPayloadIsNotTheSource(raw: unknown, payload: Uint8Array): void {
+async function readRecordedSource(
+  manifest: Record<string, unknown>,
+  sourceLocale: string,
+  archiveBytes: Uint8Array,
+): Promise<ReadSource> {
+  const declared = manifest.sourceArchiveSha256;
+  if (typeof declared !== "string" || !/^[0-9a-f]{64}$/.test(declared)) {
+    throw refuse(
+      `${TRANSLATION_MANIFEST_NAME} has no usable sourceArchiveSha256, so the archive it was ` +
+        `made from cannot be identified`,
+      REBUILD,
+    );
+  }
+  const actual = await sha256Hex(archiveBytes);
+  if (actual !== declared) {
+    throw refuse(
+      `--source-archive hashes to ${actual}, but ${TRANSLATION_MANIFEST_NAME} was made from ` +
+        `${declared}`,
+      SOURCE_HINT,
+    );
+  }
+
+  const recordedPath = manifest.sourcePath;
+  if (typeof recordedPath !== "string" || recordedPath.length === 0) {
+    throw refuse(
+      `${TRANSLATION_MANIFEST_NAME} has no sourcePath, so there is no way to tell which file in ` +
+        `the archive the run read`,
+      REBUILD,
+    );
+  }
+
+  const archive = await readZip(archiveBytes);
+  // Chapter files are context for translating, not for verifying, so none are
+  // read: this is a several-hundred-megabyte archive in the ordinary case.
+  const found = await discoverQuestSource(archive, { sourceLocale, maxChapterFiles: 0 });
+  if (recordedPath !== found.path && !found.alternates.includes(recordedPath)) {
+    throw refuse(
+      `${TRANSLATION_MANIFEST_NAME} says it read ${recordedPath}, but the ${sourceLocale} quest ` +
+        `file in --source-archive is ${[found.path, ...found.alternates].join(", ")}`,
+      SOURCE_HINT,
+    );
+  }
+
+  const text = await archive.readText(recordedPath);
+  const detected = ftbQuestsLangAdapter.detect(text);
+  if (!detected.supported) {
+    throw refuse(
+      `${recordedPath} in --source-archive is not a readable FTB Quests lang file ` +
+        `(${detected.reason ?? "unrecognised"})`,
+      SOURCE_HINT,
+    );
+  }
+  const document = ftbQuestsLangAdapter.extract(text);
+  return {
+    path: recordedPath,
+    digests: digestByKey(document.units),
+    keyCount: document.keyCount,
+    unitCount: document.units.length,
+  };
+}
+
+/**
+ * The manifest's account of the source has to match the source.
+ *
+ * This is what makes the rest of the check mean anything. `sourceKeyDigests` is
+ * the manifest's own claim about text it read, and a payload compared only
+ * against that claim proves nothing at all: whoever writes the payload writes
+ * the claim. Recomputing every digest from the archive turns it from an
+ * assertion into a fact, and a manifest that disagrees is refused outright
+ * rather than quietly overruled.
+ */
+function assertManifestDescribesTheSource(
+  manifest: Record<string, unknown>,
+  source: ReadSource,
+): void {
+  const raw = manifest.sourceKeyDigests;
   if (!isObject(raw) || Object.keys(raw).length === 0) {
     throw refuse(
       `${TRANSLATION_MANIFEST_NAME} has no sourceKeyDigests, so there is no way to prove its ` +
@@ -212,17 +316,55 @@ function assertPayloadIsNotTheSource(raw: unknown, payload: Uint8Array): void {
       REBUILD,
     );
   }
-  const source = new Map<string, string>();
-  for (const [key, value] of Object.entries(raw)) {
-    if (typeof value !== "string" || value.length === 0) {
-      throw refuse(
-        `${TRANSLATION_MANIFEST_NAME} sourceKeyDigests[${key}] is not a digest`,
-        REBUILD,
-      );
-    }
-    source.set(key, value);
+
+  const claimed = Object.keys(raw).sort();
+  const actual = Object.keys(source.digests).sort();
+  if (claimed.length !== actual.length || claimed.some((key, i) => key !== actual[i])) {
+    throw refuse(
+      `${TRANSLATION_MANIFEST_NAME} records ${claimed.length} source keys, but ${source.path} in ` +
+        `--source-archive has ${actual.length} -- the manifest does not describe this archive`,
+      SOURCE_HINT,
+    );
+  }
+  const wrong = actual.filter((key) => raw[key] !== source.digests[key]);
+  if (wrong.length > 0) {
+    throw refuse(
+      `${TRANSLATION_MANIFEST_NAME} records a different source digest from the one ${source.path} ` +
+        `in --source-archive actually produces, for ${wrong.length} of ${actual.length} keys ` +
+        `(${wrong.slice(0, 3).join(", ")}${wrong.length > 3 ? ", ..." : ""})`,
+      SOURCE_HINT,
+    );
   }
 
+  // Counts the run wrote down, checked against the file it says it counted.
+  const counts = manifest.keyCounts as Record<string, unknown>;
+  for (
+    const [field, expected] of [
+      ["keys", source.keyCount],
+      ["strings", source.unitCount],
+    ] as const
+  ) {
+    if (counts[field] !== expected) {
+      throw refuse(
+        `${TRANSLATION_MANIFEST_NAME} keyCounts.${field} is ${
+          JSON.stringify(counts[field])
+        }, but ` +
+          `${source.path} in --source-archive has ${expected}`,
+        SOURCE_HINT,
+      );
+    }
+  }
+}
+
+/**
+ * The last check: the payload has to be a translation *of that source*.
+ *
+ * A translation preserves the key set and changes the text behind it. Compared
+ * against the source as independently read -- not against the manifest's
+ * account of it -- a payload that reproduces every digest is the pack's own
+ * prose, whatever the manifest beside it says.
+ */
+function assertPayloadIsATranslationOf(source: ReadSource, payload: Uint8Array): void {
   const text = new TextDecoder().decode(payload);
   const detected = ftbQuestsLangAdapter.detect(text);
   if (!detected.supported) {
@@ -235,21 +377,20 @@ function assertPayloadIsNotTheSource(raw: unknown, payload: Uint8Array): void {
   const payloadDigests = digestByKey(ftbQuestsLangAdapter.extract(text).units);
 
   const payloadKeys = Object.keys(payloadDigests).sort();
-  const sourceKeys = [...source.keys()].sort();
+  const sourceKeys = Object.keys(source.digests).sort();
   if (payloadKeys.length !== sourceKeys.length || payloadKeys.some((k, i) => k !== sourceKeys[i])) {
     throw refuse(
-      `The overlay's quest file has ${payloadKeys.length} keys, but ` +
-        `${TRANSLATION_MANIFEST_NAME} recorded ${sourceKeys.length} for the run it describes -- ` +
-        `they are not the same file`,
+      `The overlay's quest file has ${payloadKeys.length} keys, but ${source.path} in ` +
+        `--source-archive has ${sourceKeys.length} -- they are not the same file`,
       REBUILD,
     );
   }
 
-  const unchanged = payloadKeys.filter((key) => payloadDigests[key] === source.get(key));
-  if (unchanged.length === payloadKeys.length) {
+  const translated = payloadKeys.filter((key) => payloadDigests[key] !== source.digests[key]);
+  if (translated.length === 0) {
     throw refuse(
-      `Every key in the overlay's quest file is byte-for-byte the source text this manifest ` +
-        `describes, so it is the pack's own prose and will not be packaged`,
+      `Every key in the overlay's quest file is byte-for-byte ${source.path} in ` +
+        `--source-archive, so it is the pack's own prose and will not be packaged`,
       "Package the translated overlay, not the file the translation was read from.",
     );
   }

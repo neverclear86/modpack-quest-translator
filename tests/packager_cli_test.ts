@@ -9,10 +9,14 @@ import { ftbQuestsLangAdapter } from "../src/quests/ftbquests_lang.ts";
 import { finishedRun } from "./helpers/translation_report.ts";
 import { parsePackagerArgs } from "../src/packager/args.ts";
 import { runPackager } from "../src/packager/run.ts";
+import { sourceArchiveOf } from "./helpers/source_archive.ts";
 
 const JAPANESE = '{\n  quest.title: "空の冒険"\n}\n';
 /** What the run read; its per-key digests prove the payload is not it. */
 const ENGLISH = '{\n  quest.title: "Skyward Adventure"\n}\n';
+
+/** The three flags every packaging run has to carry. */
+const REQUIRED = ["--overlay", "a.zip", "--output", "b.zip", "--source-archive", "pack.zip"];
 
 function refuses(argv: string[], needle: string): void {
   const error = assertThrows(() => parsePackagerArgs(argv), AppError);
@@ -20,32 +24,26 @@ function refuses(argv: string[], needle: string): void {
   assertStringIncludes(error.message, needle);
 }
 
-Deno.test("the packager needs an overlay and an output", () => {
+Deno.test("the packager needs an overlay, a source archive and an output", () => {
   // No arguments at all is a request for help, not a failure.
   refuses(["--json"], "--overlay");
   refuses(["--overlay", "a.zip"], "--output");
-  const options = parsePackagerArgs(["--overlay", "a.zip", "--output", "b.zip"]);
+  // Without the archive the run read, the only account of what the source said
+  // is the manifest sitting next to the payload, which proves nothing.
+  refuses(["--overlay", "a.zip", "--output", "b.zip"], "--source-archive");
+  const options = parsePackagerArgs(REQUIRED);
   assertEquals(options.overlay, "a.zip");
   assertEquals(options.output, "b.zip");
+  assertEquals(options.sourceArchive, "pack.zip");
   assertEquals(options.noBinaries, false);
 });
 
 Deno.test("binaries come from a directory or from explicit paths", () => {
-  const fromDir = parsePackagerArgs([
-    "--overlay",
-    "a.zip",
-    "--output",
-    "b.zip",
-    "--binaries",
-    "dist/bin",
-  ]);
+  const fromDir = parsePackagerArgs([...REQUIRED, "--binaries", "dist/bin"]);
   assertEquals(fromDir.binariesDir, "dist/bin");
 
   const explicit = parsePackagerArgs([
-    "--overlay",
-    "a.zip",
-    "--output",
-    "b.zip",
+    ...REQUIRED,
     "--linux-binary",
     "/l",
     "--windows-binary",
@@ -56,14 +54,11 @@ Deno.test("binaries come from a directory or from explicit paths", () => {
 });
 
 Deno.test("--no-binaries and an explicit binary contradict each other", () => {
-  refuses(
-    ["--overlay", "a.zip", "--output", "b.zip", "--no-binaries", "--linux-binary", "/l"],
-    "--no-binaries",
-  );
+  refuses([...REQUIRED, "--no-binaries", "--linux-binary", "/l"], "--no-binaries");
 });
 
 Deno.test("unknown flags and stray positionals are refused", () => {
-  refuses(["--overlay", "a.zip", "--output", "b.zip", "--wat"], "--wat");
+  refuses([...REQUIRED, "--wat"], "--wat");
   refuses(["a.zip"], "a.zip");
 });
 
@@ -76,6 +71,8 @@ Deno.test("--help and --version short-circuit", () => {
 interface Harness {
   dir: string;
   overlay: string;
+  /** The modpack archive the run read, on disk. */
+  sourceArchive: string;
   binaries: string;
   stdout: string[];
   stderr: string[];
@@ -83,13 +80,16 @@ interface Harness {
 
 async function harness(): Promise<Harness> {
   const dir = await Deno.makeTempDir({ prefix: "mqt-package-" });
+  const source = await sourceArchiveOf(ENGLISH);
+  const sourceArchive = `${dir}/aca-v2.4.zip`;
+  await Deno.writeFile(sourceArchive, source.bytes);
   const meta: OverlayMeta = {
     toolVersion: "1.1.0",
     generatedAt: "2026-08-25T00:00:00.000Z",
     sourceUrl: "https://example.invalid/aca.zip",
     packName: "All of Create: Aeronautics",
     packVersion: "2.4",
-    sourceArchiveSha256: "d".repeat(64),
+    sourceArchiveSha256: source.sha256,
     sourceLocale: "en_us",
     targetLocale: "ja_jp",
     overrideEnglish: true,
@@ -97,7 +97,7 @@ async function harness(): Promise<Harness> {
     model: "haiku",
     fallbackModel: "sonnet",
     archiveFlavour: "curseforge",
-    sourcePath: "overrides/config/ftbquests/quests/lang/en_us.snbt",
+    sourcePath: source.path,
     keyCounts: { keys: 1, strings: 1, translated: 1, cached: 0, skipped: 0, fallback: 0 },
     sourceKeyDigests: digestByKey(ftbQuestsLangAdapter.extract(ENGLISH).units),
   };
@@ -123,11 +123,15 @@ async function harness(): Promise<Harness> {
     `${binaries}/mqt-installer-windows-x86_64.exe`,
     new TextEncoder().encode("MZ fake"),
   );
-  return { dir, overlay, binaries, stdout: [], stderr: [] };
+  return { dir, overlay, sourceArchive, binaries, stdout: [], stderr: [] };
 }
 
+/** Adds the source archive, which every packaging run needs and none varies. */
 async function invoke(h: Harness, argv: string[]): Promise<number> {
-  return await runPackager(argv, {
+  const full = argv.includes("--source-archive")
+    ? argv
+    : [...argv, "--source-archive", h.sourceArchive];
+  return await runPackager(full, {
     stdout: (line) => h.stdout.push(line),
     stderr: (line) => h.stderr.push(line),
   });
@@ -297,3 +301,48 @@ Deno.test("a missing overlay file is reported, not thrown as a stack trace", asy
     assertStringIncludes(h.stderr.join("\n"), "nope.zip");
   });
 });
+
+Deno.test("a source archive that is not the one the run read is refused at the CLI", async () => {
+  await withHarness(async (h) => {
+    const other = `${h.dir}/some-other-pack.zip`;
+    await Deno.writeFile(other, (await sourceArchiveOf(`${ENGLISH}// v2.5\n`)).bytes);
+
+    const code = await invoke(h, [
+      "--overlay",
+      h.overlay,
+      "--output",
+      `${h.dir}/out.zip`,
+      "--no-binaries",
+      "--source-archive",
+      other,
+    ]);
+    assertEquals(code, 10);
+    assertStringIncludes(h.stderr.join("\n"), "was made from");
+    assertEquals(await exists(`${h.dir}/out.zip`), false);
+  });
+});
+
+Deno.test("a source archive that is not there at all is an input error", async () => {
+  await withHarness(async (h) => {
+    const code = await invoke(h, [
+      "--overlay",
+      h.overlay,
+      "--output",
+      `${h.dir}/out.zip`,
+      "--no-binaries",
+      "--source-archive",
+      `${h.dir}/nowhere.zip`,
+    ]);
+    assertEquals(code, 2);
+    assertStringIncludes(h.stderr.join("\n"), "--source-archive");
+  });
+});
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}

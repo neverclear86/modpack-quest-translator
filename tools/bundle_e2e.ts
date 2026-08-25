@@ -5,7 +5,8 @@
  * Deliberately not a `deno test`: the unit suite never spawns a process or
  * writes outside a temp directory, and this does both. Run it with
  * `deno task e2e:bundle`, optionally against an overlay a real translation run
- * produced: `deno task e2e:bundle --overlay ./dist/some-pack-ja.zip`.
+ * produced, together with the pack archive that run read:
+ * `deno task e2e:bundle --overlay ./dist/some-pack-ja.zip --source-archive ./aca-v2.4.zip`.
  *
  * Every child process is spawned with `Deno.execPath()` -- the same Deno that
  * is running this script -- so an older `deno` earlier on PATH cannot quietly
@@ -33,11 +34,11 @@ const INSTANCE_NAME = "インスタンス フォルダ";
 const DENO = Deno.execPath();
 
 /** `--overlay <zip>` packages an overlay that already exists, rather than translating one. */
-function overlayArgument(): string | undefined {
-  const index = Deno.args.indexOf("--overlay");
+function argument(name: string): string | undefined {
+  const index = Deno.args.indexOf(name);
   if (index < 0) return undefined;
   const value = Deno.args[index + 1];
-  if (value === undefined) throw new Error("--overlay needs a path to an overlay .zip");
+  if (value === undefined) throw new Error(`${name} needs a path to a .zip`);
   return value;
 }
 
@@ -62,6 +63,15 @@ function bytesContain(haystack: Uint8Array, needle: Uint8Array): boolean {
     if (j === needle.length) return true;
   }
   return false;
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function* walk(dir: string): AsyncGenerator<string> {
@@ -106,7 +116,14 @@ async function run(
 
 async function main(): Promise<void> {
   const root = await Deno.makeTempDir({ dir: "/tmp", prefix: "mqt-bundle-e2e-" });
-  const external = overlayArgument();
+  const external = argument("--overlay");
+  const externalSource = argument("--source-archive");
+  if (external !== undefined && externalSource === undefined) {
+    throw new Error(
+      "--overlay needs --source-archive: the packager reads the pack's own quest file back out " +
+        "of the archive the translation run read, to prove the payload is not that file",
+    );
+  }
   console.log(`workspace: ${root}`);
   console.log(`deno:      ${DENO} (${Deno.version.deno})`);
   console.log(external ? `overlay:   ${external} (given)\n` : "overlay:   translated here\n");
@@ -137,8 +154,17 @@ async function main(): Promise<void> {
 
   // ---- the overlay to package ---------------------------------------------
   let overlay: string;
+  // The archive the translation run read. The packager will not build a bundle
+  // without it, because the manifest alone cannot prove what the source said.
+  let sourceArchive: string;
   if (external !== undefined) {
     overlay = external;
+    sourceArchive = externalSource!;
+    check(
+      "the source archive given on the command line is readable",
+      (await Deno.stat(sourceArchive)).isFile,
+      sourceArchive,
+    );
     check(
       "the overlay given on the command line is readable",
       (await Deno.stat(overlay)).isFile,
@@ -187,6 +213,7 @@ async function main(): Promise<void> {
     }
     check("the translator wrote exactly one overlay archive", overlays.length === 1, overlays[0]);
     overlay = overlays[0];
+    sourceArchive = pack;
   }
 
   // ---- package ------------------------------------------------------------
@@ -196,6 +223,8 @@ async function main(): Promise<void> {
     "package-installer",
     "--overlay",
     overlay,
+    "--source-archive",
+    sourceArchive,
     "--output",
     `${root}/bundle.zip`,
     "--binaries",
@@ -217,12 +246,42 @@ async function main(): Promise<void> {
     "package-installer",
     "--overlay",
     overlay,
+    "--source-archive",
+    sourceArchive,
     "--output",
     `${root}/bundle-again.zip`,
     "--binaries",
     "dist/bin",
     "--quiet",
   ]);
+
+  // The archive is what the source-prose claim is measured against, so a
+  // different one has to be refused rather than shrugged at.
+  const wrongSource = `${root}/not-the-source.zip`;
+  await Deno.writeFile(
+    wrongSource,
+    await writeZip([
+      { path: "modrinth.index.json", text: JSON.stringify({ name: "Something Else" }) },
+      { path: `overrides/${TARGET_DIR}/en_us.snbt`, text: `${lang}// a later release\n` },
+    ]),
+  );
+  const wrong = await run(DENO, [
+    "task",
+    "package-installer",
+    "--overlay",
+    overlay,
+    "--source-archive",
+    wrongSource,
+    "--output",
+    `${root}/never-written.zip`,
+    "--no-binaries",
+  ], { expect: 10 });
+  check(
+    "a source archive that is not the one the run read is refused",
+    wrong.stderr.includes("was made from") &&
+      !await pathExists(`${root}/never-written.zip`),
+    wrong.stderr.trim().split("\n")[0],
+  );
   check(
     "packaging the same overlay twice is byte-identical",
     await sha256Hex(await Deno.readFile(`${root}/bundle.zip`)) ===

@@ -6,6 +6,8 @@ export interface PackagerOptions {
   mode: PackagerMode;
   overlay: string;
   output: string;
+  /** The modpack archive the translation run read. Required; see provenance.ts. */
+  sourceArchive: string;
   manifest?: string;
   report?: string;
   binariesDir?: string;
@@ -23,6 +25,7 @@ export interface PackagerOptions {
 const VALUE_FLAGS = new Set([
   "--overlay",
   "--output",
+  "--source-archive",
   "-o",
   "--manifest",
   "--report",
@@ -79,6 +82,16 @@ export function parsePackagerArgs(argv: readonly string[]): PackagerOptions {
   if (!overlay) throw usage("--overlay is required, e.g. --overlay ./dist/aca-ja.zip");
   const output = values.get("--output");
   if (!output) throw usage("--output is required, e.g. --output ./dist/aca-ja-installer.zip");
+  const sourceArchive = values.get("--source-archive");
+  if (!sourceArchive) {
+    throw usage(
+      "--source-archive is required, e.g. --source-archive ./aca-v2.4.zip",
+      "It has to be the modpack archive the translation run read. The packager re-reads the " +
+        "pack's own quest file out of it to prove the payload is a translation and not that " +
+        "file; a manifest alone cannot prove it, because whoever writes the payload writes the " +
+        "manifest beside it.",
+    );
+  }
 
   const noBinaries = switches.has("--no-binaries");
   const linuxBinary = values.get("--linux-binary");
@@ -95,6 +108,7 @@ export function parsePackagerArgs(argv: readonly string[]): PackagerOptions {
     mode: "package",
     overlay,
     output,
+    sourceArchive,
     ...optional(values, "--manifest", "manifest"),
     ...optional(values, "--report", "report"),
     ...(binariesDir !== undefined ? { binariesDir } : {}),
@@ -123,6 +137,7 @@ function blank(mode: PackagerMode): PackagerOptions {
     mode,
     overlay: "",
     output: "",
+    sourceArchive: "",
     noBinaries: false,
     force: false,
     json: false,

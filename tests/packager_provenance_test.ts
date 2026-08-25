@@ -22,6 +22,7 @@ import { digestByKey } from "../src/quests/digest.ts";
 import { ftbQuestsLangAdapter } from "../src/quests/ftbquests_lang.ts";
 import { createDefaultRedactor } from "../src/util/redact.ts";
 import { finishedRun } from "./helpers/translation_report.ts";
+import { sourceArchiveOf } from "./helpers/source_archive.ts";
 
 const LANG = "config/ftbquests/quests/lang";
 
@@ -39,6 +40,9 @@ const JAPANESE = `{
 }
 `;
 
+/** The pack archive the run read, so the manifest can be checked against it. */
+const SOURCE = await sourceArchiveOf(ENGLISH);
+
 function sourceDigests(snbt: string): Record<string, string> {
   return digestByKey(ftbQuestsLangAdapter.extract(snbt).units);
 }
@@ -50,7 +54,7 @@ function meta(overrides: Partial<OverlayMeta> = {}): OverlayMeta {
     sourceUrl: "https://example.invalid/aca.zip",
     packName: "All of Create: Aeronautics",
     packVersion: "2.4",
-    sourceArchiveSha256: "d".repeat(64),
+    sourceArchiveSha256: SOURCE.sha256,
     sourceLocale: "en_us",
     targetLocale: "ja_jp",
     targetLanguage: "Japanese",
@@ -59,7 +63,7 @@ function meta(overrides: Partial<OverlayMeta> = {}): OverlayMeta {
     model: "haiku",
     fallbackModel: "sonnet",
     archiveFlavour: "curseforge",
-    sourcePath: `overrides/${LANG}/en_us.snbt`,
+    sourcePath: SOURCE.path,
     keyCounts: { keys: 3, strings: 3, translated: 3, cached: 0, skipped: 0, fallback: 0 },
     sourceKeyDigests: sourceDigests(ENGLISH),
     ...overrides,
@@ -85,6 +89,7 @@ async function overlayOf(
 function args(overlay: Uint8Array, overrides: Partial<PackageBundleArgs> = {}): PackageBundleArgs {
   return {
     overlay,
+    sourceArchive: SOURCE.bytes,
     bundleId: "aca-2.4-ja_jp-en_us-override",
     toolVersion: "1.1.1",
     binaries: [],
@@ -115,9 +120,9 @@ Deno.test("a genuine translated overlay packages", async () => {
 });
 
 Deno.test("an overlay whose payload is still the pack's own English is refused", async () => {
-  // Every key digests to exactly what the run recorded as the *source*, so
-  // whatever this is, it is not the translation the manifest describes.
-  await refused(await overlayOf(ENGLISH), "the source text this manifest describes");
+  // Every key digests to exactly what the source archive says, so whatever this
+  // is, it is not a translation of it.
+  await refused(await overlayOf(ENGLISH), "byte-for-byte");
 });
 
 Deno.test("a hand-made overlay with no translation manifest is refused", async () => {
@@ -214,8 +219,16 @@ Deno.test("override mode ships the English fallback file, whatever locale was re
   // the payload is named en_us even for a run that read de_de (DESIGN.md 7.2).
   // The overlay writer, the provenance check and the installer's manifest
   // parser all have to agree on that, or a genuine overlay is refused.
+  const german = await sourceArchiveOf(ENGLISH, "de_de");
   const built = await buildInstallerBundle(
-    args(await overlayOf(JAPANESE, { sourceLocale: "de_de" })),
+    args(
+      await overlayOf(JAPANESE, {
+        sourceLocale: "de_de",
+        sourceArchiveSha256: german.sha256,
+        sourcePath: german.path,
+      }),
+      { sourceArchive: german.bytes },
+    ),
   );
   assertEquals(built.manifest.payload[0].path, `${LANG}/en_us.snbt`);
   assertEquals(built.manifest.sourceLocale, "de_de");
@@ -243,8 +256,10 @@ Deno.test("the bundle README says what the digests prove and what they do not", 
   // both languages rather than letting `containsSourceProse: false` imply it.
   assertStringIncludes(readme, "not signed");
   assertStringIncludes(readme, "署名がありません");
-  // And the source-prose claim is described as the check it is, not as proof.
-  assertStringIncludes(readme, "refuses to build");
+  // And the source-prose claim is described as the check it is, not as proof --
+  // including whose word the source is taken on.
+  assertStringIncludes(readme, "modpack archive the translation was made from");
+  assertStringIncludes(readme, "relative to the archive supplied");
 });
 
 /** The manifest a genuine run writes, extracted from a genuine overlay. */
@@ -252,3 +267,99 @@ async function manifestText(): Promise<string> {
   const overlay = await readZip(await overlayOf(JAPANESE));
   return await overlay.readText("translation-manifest.json");
 }
+
+/**
+ * The reviewer's sequence: a real source archive, a real payload of the pack's
+ * own English, and a manifest that lies about what the source said.
+ *
+ * `sourceKeyDigests` is the manifest's own claim about text it read. A payload
+ * compared only against that claim proves nothing at all -- whoever writes the
+ * payload writes the claim beside it, and setting every digest to a string the
+ * payload cannot possibly produce used to be enough to have the pack's own
+ * prose packaged with `containsSourceProse: false`.
+ *
+ * So the claim is no longer read as evidence. Every digest is recomputed from
+ * the archive the manifest names, and a manifest that disagrees with the file
+ * it says it read is refused before the payload is looked at.
+ */
+function fabricatedManifest(overrides: Record<string, unknown> = {}): string {
+  const honest = sourceDigests(ENGLISH);
+  const lies: Record<string, string> = {};
+  for (const key of Object.keys(honest)) lies[key] = "deadbeefdeadbeef";
+  return JSON.stringify({
+    tool: "modpack-quest-translator",
+    toolVersion: "1.1.1",
+    generatedAt: "2026-08-25T00:00:00.000Z",
+    sourceLocale: "en_us",
+    targetLocale: "ja_jp",
+    overrideEnglish: true,
+    sourceArchiveSha256: SOURCE.sha256,
+    sourcePath: SOURCE.path,
+    keyCounts: { keys: 3, strings: 3, translated: 3, cached: 0, skipped: 0, fallback: 0 },
+    sourceKeyDigests: lies,
+    ...overrides,
+  });
+}
+
+Deno.test("a manifest that lies about the source cannot launder the source itself", async () => {
+  const overlay = await writeZip([
+    { path: `${LANG}/en_us.snbt`, text: ENGLISH },
+    { path: "translation-manifest.json", text: fabricatedManifest() },
+    { path: "translation-report.json", text: JSON.stringify(REPORT) },
+  ]);
+  await refused(overlay, "different source digest");
+});
+
+Deno.test("a manifest that lies about the source is refused even with a real payload", async () => {
+  // Nothing is being smuggled here; the point is that the check does not depend
+  // on the payload being wrong. A manifest whose account of the source is false
+  // is refused on its own terms.
+  const overlay = await writeZip([
+    { path: `${LANG}/en_us.snbt`, text: JAPANESE },
+    { path: "translation-manifest.json", text: fabricatedManifest() },
+    { path: "translation-report.json", text: JSON.stringify(REPORT) },
+  ]);
+  await refused(overlay, "different source digest");
+});
+
+Deno.test("a manifest with no source archive digest cannot be checked, so it is refused", async () => {
+  const overlay = await writeZip([
+    { path: `${LANG}/en_us.snbt`, text: JAPANESE },
+    {
+      path: "translation-manifest.json",
+      text: fabricatedManifest({
+        sourceArchiveSha256: undefined,
+        sourceKeyDigests: sourceDigests(ENGLISH),
+      }),
+    },
+    { path: "translation-report.json", text: JSON.stringify(REPORT) },
+  ]);
+  await refused(overlay, "sourceArchiveSha256");
+});
+
+Deno.test("a source archive that is not the one the run read is refused", async () => {
+  const other = await sourceArchiveOf(`${ENGLISH}// a different release\n`);
+  await refused(await overlayOf(JAPANESE), "was made from", { sourceArchive: other.bytes });
+});
+
+Deno.test("a manifest pointing at a file the archive does not hold is refused", async () => {
+  await refused(
+    await overlayOf(JAPANESE, { sourcePath: "overrides/config/ftbquests/quests/lang/zz_zz.snbt" }),
+    "says it read",
+  );
+});
+
+Deno.test("counts the run wrote down are checked against the file it says it counted", async () => {
+  await refused(
+    await overlayOf(JAPANESE, {
+      keyCounts: { keys: 99, strings: 3, translated: 3, cached: 0, skipped: 0, fallback: 0 },
+    }),
+    "keyCounts.keys",
+  );
+  await refused(
+    await overlayOf(JAPANESE, {
+      keyCounts: { keys: 3, strings: 99, translated: 3, cached: 0, skipped: 0, fallback: 0 },
+    }),
+    "keyCounts.strings",
+  );
+});

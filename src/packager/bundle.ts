@@ -48,6 +48,12 @@ export interface PackageBundleArgs {
    */
   generatedAt?: string;
   binaries: PackagedBinary[];
+  /**
+   * The modpack archive the translation run read. Not optional: without it the
+   * only account of what the source said is the manifest sitting next to the
+   * payload, and whoever writes one writes the other.
+   */
+  sourceArchive: Uint8Array;
   /** Overrides for the sidecars, when they were given explicitly. */
   translationManifest?: string;
   translationReport?: string;
@@ -71,10 +77,10 @@ function packageError(message: string, hint?: string): AppError {
  * the allowlist: bytes are copied only from entries the overlay itself holds
  * under the quest lang directory, and anything else is refused outright. The
  * second, and the one that matters, is `verifyTranslationProvenance` -- the
- * overlay has to carry the manifest and report of a translation run that
- * finished, and the payload has to *not* be the source text that run recorded.
- * An overlay holding the original `en_us.snbt` fails that whether or not it is
- * dressed in a manifest, because every key still digests to the source.
+ * payload is compared against the source quest file read out of the modpack
+ * archive the run recorded, pinned by digest. An overlay holding the original
+ * `en_us.snbt` fails that however its manifest is dressed up, because the
+ * source it is measured against is read rather than described.
  *
  * That is not a signature and is not claimed as one; see `provenance.ts`.
  */
@@ -129,10 +135,11 @@ export async function buildInstallerBundle(args: PackageBundleArgs): Promise<Bui
   const translationManifest = args.translationManifest ??
     decode(metadata.get(TRANSLATION_MANIFEST_NAME));
   const translationReport = args.translationReport ?? decode(metadata.get(TRANSLATION_REPORT_NAME));
-  const source = verifyTranslationProvenance({
+  const source = await verifyTranslationProvenance({
     manifestText: translationManifest,
     reportText: translationReport,
     payloads,
+    sourceArchive: args.sourceArchive,
   });
   // `--generated-at` overrides the timestamp for reproducibility; it is not a
   // way past the provenance check, and it still has to be a real timestamp.

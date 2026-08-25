@@ -11,12 +11,16 @@ import { parseBundleManifest } from "../src/installer/bundle.ts";
 import { digestByKey } from "../src/quests/digest.ts";
 import { ftbQuestsLangAdapter } from "../src/quests/ftbquests_lang.ts";
 import { finishedRun } from "./helpers/translation_report.ts";
+import { sourceArchiveOf } from "./helpers/source_archive.ts";
 
 const JAPANESE = '{\n  quest.title: "空の冒険"\n  quest.desc: "飛行船を作る"\n}\n';
 const ENGLISH_PROSE = "Build an airship and sail the clouds";
 /** What the run read. Its per-key digests are what prove the payload is not it. */
 const ENGLISH = `{\n  quest.title: "Skyward Adventure"\n  quest.desc: "${ENGLISH_PROSE}"\n}\n`;
 const LANG = "config/ftbquests/quests/lang/en_us.snbt";
+
+/** The pack archive the run read, so the manifest can be checked against it. */
+const SOURCE = await sourceArchiveOf(ENGLISH);
 
 function meta(): OverlayMeta {
   return {
@@ -27,7 +31,7 @@ function meta(): OverlayMeta {
     packVersion: "2.4",
     minecraftVersion: "1.21.1",
     loader: "neoforge",
-    sourceArchiveSha256: "d".repeat(64),
+    sourceArchiveSha256: SOURCE.sha256,
     sourceLocale: "en_us",
     targetLocale: "ja_jp",
     targetLanguage: "Japanese",
@@ -36,7 +40,7 @@ function meta(): OverlayMeta {
     model: "haiku",
     fallbackModel: "sonnet",
     archiveFlavour: "curseforge",
-    sourcePath: "overrides/config/ftbquests/quests/lang/en_us.snbt",
+    sourcePath: SOURCE.path,
     keyCounts: { keys: 2, strings: 2, translated: 2, cached: 0, skipped: 0, fallback: 0 },
     sourceKeyDigests: digestByKey(ftbQuestsLangAdapter.extract(ENGLISH).units),
   };
@@ -55,6 +59,7 @@ async function realOverlay(layout: "instance" | "overrides" | "both"): Promise<U
 function args(overlay: Uint8Array, overrides: Partial<PackageBundleArgs> = {}): PackageBundleArgs {
   return {
     overlay,
+    sourceArchive: SOURCE.bytes,
     bundleId: "aca-2.4-ja_jp-en_us-override",
     toolVersion: "1.1.0",
     generatedAt: "2026-08-25T00:00:00.000Z",
