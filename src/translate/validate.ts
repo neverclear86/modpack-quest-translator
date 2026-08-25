@@ -3,6 +3,7 @@ import type { SnbtValue } from "../quests/snbt/mod.ts";
 import {
   countEscapedAmpersands,
   findFormattingCodes,
+  findLineBreaks,
   findPlaceholders,
   stripPlaceholders,
 } from "../quests/tokens.ts";
@@ -14,6 +15,7 @@ export type ProblemKind =
   | "formatting-codes"
   | "escaped-ampersand"
   | "placeholders"
+  | "line-breaks"
   | "unchanged"
   | "glossary"
   | "parse"
@@ -120,6 +122,19 @@ export function validateUnit(
       "placeholders",
       `Placeholders changed (missing: ${placeholders.missing.join(", ") || "none"}; ` +
         `unexpected: ${placeholders.extra.join(", ") || "none"})`,
+    );
+  }
+
+  // A multiline value must stay multiline. Nothing else in this function would
+  // notice a three-line description coming back as one run-on paragraph, and
+  // FTB renders the result as an unreadable wall of text.
+  const sourceBreaks = findLineBreaks(unit.text);
+  const translatedBreaks = findLineBreaks(translation);
+  if (sourceBreaks.join("\u0000") !== translatedBreaks.join("\u0000")) {
+    push(
+      "line-breaks",
+      `Line breaks changed: source has ${describeBreaks(sourceBreaks)}, ` +
+        `translation has ${describeBreaks(translatedBreaks)}`,
     );
   }
 
@@ -244,6 +259,13 @@ export function validateDocument(source: string, output: string): ValidationResu
   }
 
   return { ok: problems.length === 0, problems };
+}
+
+/** `2 (\n, \r\n)` -- enough to see both how many and which. */
+function describeBreaks(breaks: readonly string[]): string {
+  if (breaks.length === 0) return "0";
+  const shown = breaks.map((b) => b.replace(/\r/g, "\\r").replace(/\n/g, "\\n"));
+  return `${breaks.length} (${shown.join(", ")})`;
 }
 
 function describe(error: unknown): string {

@@ -81,6 +81,17 @@ export function stripPlaceholders(text: string): string {
   return out;
 }
 
+/**
+ * Every line break in the string, in order, as the exact bytes that produced
+ * it: `\r\n`, `\n` or a lone `\r`. FTB quest descriptions carry hard line breaks
+ * inside a single SNBT value, and a model asked to "translate this text" will
+ * happily return one flowing paragraph. Comparing the sequence rather than a
+ * count also catches a CRLF quietly normalised to LF.
+ */
+export function findLineBreaks(text: string): string[] {
+  return [...text.matchAll(/\r\n|\n|\r/g)].map((m) => m[0]);
+}
+
 /** Literal `\&` sequences FTB uses to escape the formatting character. */
 export function countEscapedAmpersands(text: string): number {
   let count = 0;

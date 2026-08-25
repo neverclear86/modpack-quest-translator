@@ -385,3 +385,35 @@ Deno.test("chapter context reaches the provider request", async () => {
     assertEquals(provider.calls[0].request.context.pack, "Test Pack");
   });
 });
+
+Deno.test("a provider that collapses a multiline value fails the run", async () => {
+  await withCache(async (cache) => {
+    const provider = new FakeProvider((request, options) => ({
+      // Plausible-looking output that quietly reflows three lines into one.
+      items: request.items.map((i) => ({ id: i.id, text: `JA:${i.text.replace(/\n/g, " ")}` })),
+      model: options.model,
+    }));
+    const error = await assertRejects(
+      () =>
+        translateUnits(units(["First line\nSecond line\nThird line"]), {
+          ...BASE,
+          provider,
+          cache,
+        }),
+      AppError,
+    );
+    assertEquals(error.code, "E_TRANSLATION");
+    assertEquals(error.message.includes("Line breaks changed"), true);
+    // Escalated to the fallback model and still refused, rather than shipping it.
+    assertEquals(provider.calls.length, 3);
+  });
+});
+
+Deno.test("a multiline value that keeps its line breaks is accepted", async () => {
+  await withCache(async (cache) => {
+    const source = "First line\nSecond line\n\nFourth line";
+    const result = await translateUnits(units([source]), { ...BASE, provider: echo(), cache });
+    assertEquals(result.translations.get("quest.0.title"), `JA:${source}`);
+    assertEquals(result.report.failed.length, 0);
+  });
+});

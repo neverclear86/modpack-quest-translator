@@ -198,3 +198,63 @@ Deno.test("the unchanged check uses the same placeholder detector", () => {
   assertEquals(prose.ok, false);
   assertEquals(prose.problems[0].kind, "unchanged");
 });
+
+Deno.test("embedded line breaks must survive exactly", () => {
+  const u = unit("First line\nSecond line\nThird line");
+  assertEquals(validateUnit(u, "一行目\n二行目\n三行目").ok, true);
+
+  const collapsed = validateUnit(u, "一行目 二行目 三行目");
+  assertEquals(collapsed.ok, false);
+  assertEquals(collapsed.problems[0].kind, "line-breaks");
+
+  const partial = validateUnit(u, "一行目\n二行目 三行目");
+  assertEquals(partial.ok, false);
+  assertEquals(partial.problems[0].kind, "line-breaks");
+});
+
+Deno.test("a line break may not be invented where the source had none", () => {
+  const added = validateUnit(unit("A single long line of quest prose"), "一行の\nクエスト文");
+  assertEquals(added.ok, false);
+  assertEquals(added.problems[0].kind, "line-breaks");
+});
+
+Deno.test("blank-line runs are preserved, not squeezed", () => {
+  const u = unit("Paragraph one\n\nParagraph two");
+  assertEquals(validateUnit(u, "段落一\n\n段落二").ok, true);
+  assertEquals(validateUnit(u, "段落一\n段落二").ok, false);
+  assertEquals(validateUnit(u, "段落一\n\n\n段落二").ok, false);
+});
+
+Deno.test("the exact CR/LF sequence is preserved, not just the count", () => {
+  const u = unit("Windows line\r\nNext line");
+  assertEquals(validateUnit(u, "ウィンドウズ行\r\n次の行").ok, true);
+  // Same number of line breaks, different bytes: CRLF silently became LF.
+  const unixified = validateUnit(u, "ウィンドウズ行\n次の行");
+  assertEquals(unixified.ok, false);
+  assertEquals(unixified.problems[0].kind, "line-breaks");
+
+  const lone = unit("Old Mac line\rNext line");
+  assertEquals(validateUnit(lone, "旧マック行\r次の行").ok, true);
+  assertEquals(validateUnit(lone, "旧マック行\n次の行").ok, false);
+});
+
+Deno.test("line breaks at the edges of a string are preserved", () => {
+  const trailing = unit("Quest description text\n");
+  assertEquals(validateUnit(trailing, "クエストの説明文\n").ok, true);
+  assertEquals(validateUnit(trailing, "クエストの説明文").ok, false);
+
+  const leading = unit("\nQuest description text");
+  assertEquals(validateUnit(leading, "\nクエストの説明文").ok, true);
+  assertEquals(validateUnit(leading, "クエストの説明文").ok, false);
+});
+
+Deno.test("the line-break message says what was expected", () => {
+  const r = validateUnit(unit("One\nTwo"), "一 二");
+  assertEquals(r.ok, false);
+  assertEquals(r.problems[0].kind, "line-breaks");
+  assertEquals(r.problems[0].message.includes("1"), true);
+});
+
+Deno.test("a single-line string with no breaks is unaffected", () => {
+  assertEquals(validateUnit(unit("Craft a cogwheel"), "歯車を作る").ok, true);
+});
