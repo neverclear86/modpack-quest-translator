@@ -1,0 +1,43 @@
+{
+	default_hide_dependency_lines: false
+	default_quest_shape: ""
+	filename: "rubius_main"
+	group: ""
+	id: "1385B715792E61A1"
+	order_index: 0
+	quest_links: [ ]
+	quests: [
+		{
+			id: "0000000000002329"
+			rewards: [
+				{
+					id: "1234567890ABCDEF"
+					type: "xp"
+					xp: 100
+				}
+				{
+					exclude_from_claim_all: true
+					id: "6EAE64F091D849FE"
+					table_id: 264534277666289367L
+					type: "loot"
+				}
+			]
+			tasks: [{
+				id: "104CF098E2B9D97B"
+				type: "checkmark"
+			}]
+			x: 0.0d
+			y: -1.5f
+		}
+		{
+			dependencies: ["0000000000002329"]
+			id: "000000000000232A"
+			size: 1.5d
+			tasks: [{
+				id: "2A2A2A2A2A2A2A2A"
+				type: "checkmark"
+			}]
+		}
+	]
+	title: "Welcome to Rubius Cobblemon"
+}

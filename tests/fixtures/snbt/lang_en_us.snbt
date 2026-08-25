@@ -1,0 +1,34 @@
+{
+	chapter.032B1396E6C49A89.title: "Create: Core"
+	chapter.0484AD27FD556ADB.title: "Create: Bells \\& Whistles"
+	chapter.16A4EEF035DA8383.title: "Storage \\& Utility"
+	chapter_group.1A2B3C4D5E6F7080.title: "Tech"
+	file.0000000000000001.title: "Quests"
+	quest.0000000000000002.quest_desc: ["Craft your first cogwheel."]
+	quest.0000000000000002.title: "Cogwheel"
+	quest.000000000000004B.quest_desc: [
+		"Automate Cobblemon item production."
+		"{image:cobblemore_lib:item/ball_lids/incomplete_ball/incomplete_ultra_ball width:100 height:100 align:center}"
+	]
+	quest.000000000000004B.title: "Cobblemon Factory"
+	quest.0000000000002329.quest_desc: [
+		"Welcome, Trainer! You have arrived in the world of Rubius."
+		""
+		"This guide will help you navigate your journey, from catching your first Pokémon to mastering complex technologies."
+		""
+		"Check the tabs on the left to explore different chapters."
+	]
+	quest.0000000000002329.quest_subtitle: "&6Start here&r"
+	quest.0000000000002329.title: "Welcome to Rubius Cobblemon"
+	quest.000000000000232A.quest_desc: [
+		"Your primary goal is to become a Pokémon Master."
+		""
+		"The &bCobblemon&r chapter will guide you through catching, training, and battling."
+	]
+	quest.000000000000232E.title: "Chef Track (Farmer’s Delight)"
+	quest.00000000000FFFF1.quest_desc: ["You need %s more of %1$s to continue."]
+	quest.00000000000FFFF1.title: ""
+	reward.0000000000000009.title: "Loot Bag"
+	reward_table.40817D801D2F809E.title: "Common Loot"
+	task.104CF098E2B9D97B.title: "Unknown type: checkmark"
+}
