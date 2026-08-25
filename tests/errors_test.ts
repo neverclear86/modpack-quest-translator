@@ -11,7 +11,17 @@ Deno.test("exit codes match the documented table", () => {
   assertEquals(EXIT_CODES.E_VALIDATION, 7);
   assertEquals(EXIT_CODES.E_WRITE, 8);
   assertEquals(EXIT_CODES.E_PREFLIGHT, 9);
+  assertEquals(EXIT_CODES.E_BUNDLE, 10);
+  assertEquals(EXIT_CODES.E_INSTANCE, 11);
+  assertEquals(EXIT_CODES.E_TARGET_MODIFIED, 12);
+  assertEquals(EXIT_CODES.E_BACKUP, 13);
+  assertEquals(EXIT_CODES.E_NOT_INSTALLED, 14);
   assertEquals(EXIT_CODES.E_CANCELLED, 130);
+});
+
+Deno.test("every exit code is distinct", () => {
+  const codes = Object.values(EXIT_CODES);
+  assertEquals(new Set(codes).size, codes.length);
 });
 
 Deno.test("AppError carries a code and an actionable hint", () => {

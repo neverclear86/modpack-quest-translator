@@ -1,4 +1,4 @@
-/** Documented, stable exit codes. See DESIGN.md §8. */
+/** Documented, stable exit codes. See DESIGN.md §8 and INSTALLER_DESIGN.md §4.1. */
 export const EXIT_CODES = {
   E_INTERNAL: 1,
   E_INVALID_INPUT: 2,
@@ -9,6 +9,12 @@ export const EXIT_CODES = {
   E_VALIDATION: 7,
   E_WRITE: 8,
   E_PREFLIGHT: 9,
+  // Installer-only, from 10 up, so the translator's table never shifts.
+  E_BUNDLE: 10,
+  E_INSTANCE: 11,
+  E_TARGET_MODIFIED: 12,
+  E_BACKUP: 13,
+  E_NOT_INSTALLED: 14,
   E_CANCELLED: 130,
 } as const;
 
