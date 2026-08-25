@@ -142,6 +142,12 @@ single quest-lang file (and, optionally, chapter files for context) is decompres
 downloaded archive is opened read-only and never rewritten — satisfying "never modify the original
 downloaded archive".
 
+The ratio rule needs that floor. Highly repetitive text legitimately compresses several hundred to
+one — 100 KiB of a single repeated character deflates about 820:1 — so a low threshold with no floor
+rejects real quest files. The absolute per-entry and total caps are the real bound; the ratio check
+only catches a bomb earlier and more cheaply. Inflation is additionally capped against _actual_
+output bytes, so a central directory that understates a size cannot bomb us.
+
 `archive/zip/writer.ts` — deterministic writer: entries sorted by path, fixed DOS timestamp
 `1980-01-01T00:00:00`, fixed external attributes (`0644`/`0755`), no extra fields, no data
 descriptors, UTF-8 flag set. Byte-identical output for identical input ⇒ satisfies "deterministic
@@ -298,10 +304,19 @@ for each batch:
   if nothing left → mark "cached"
   attempt 1: primary model  (--model, default haiku, --effort low)
   on transient error → bounded exponential backoff (3 attempts, 500 ms × 2ⁿ, capped 8 s)
+                     → budget exhausted: fail the batch, do NOT escalate the model
   on validation failure → attempt 2: primary model, repaired prompt
                         → attempt 3: fallback model (--fallback-model, default sonnet)
   still failing → record failed unit ids; run fails at the end (atomic policy)
 ```
+
+Transient exhaustion deliberately does **not** advance the model plan. A rate limit or an outage
+cannot be fixed by a bigger model, and letting each plan step spend its own retry budget cost 3× the
+calls (12 provider invocations) burning the user's quota on a provider that is simply down. Model
+escalation is reserved for validation failures, where a stronger model genuinely can help.
+
+Identical source strings are deduplicated before batching, so a quest line repeated across the pack
+is translated once and fanned back out by id.
 
 Only failed/malformed batches are retried — never the whole run. Concurrency is bounded by
 `--concurrency` (default 2, hard max 8). Quality presets: `--quality fast` (haiku only),
