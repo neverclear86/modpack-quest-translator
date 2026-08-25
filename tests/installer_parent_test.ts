@@ -441,6 +441,131 @@ Deno.test("a parent swapped inside the publishing link leaves an occupied name a
   });
 });
 
+/** Swap the parent from inside a `Deno.open` whose path matches. */
+function swapInsideOpen(scene: Scene, incoming: string, marker: string): { undo: () => void } {
+  const open = Deno.open.bind(Deno);
+  const rename = Deno.rename.bind(Deno);
+  let swapped = false;
+  Object.defineProperty(Deno, "open", {
+    configurable: true,
+    value: async (path: string, options?: Deno.OpenOptions) => {
+      const file = await open(path, options);
+      if (!swapped && String(path).includes(marker)) {
+        swapped = true;
+        await rename(scene.lang, scene.moved);
+        await rename(incoming, scene.lang);
+      }
+      return file;
+    },
+  });
+  return { undo: () => Object.defineProperty(Deno, "open", { configurable: true, value: open }) };
+}
+
+Deno.test("a parent swapped around the temporary file's creation never receives the payload", async () => {
+  await withScene(async (scene) => {
+    await Deno.writeTextFile(scene.target, ORIGINAL);
+    const incoming = `${scene.outside}/incoming`;
+    await Deno.mkdir(incoming);
+    await Deno.writeTextFile(`${incoming}/en_us.snbt`, THEIRS);
+
+    const attack = swapInsideOpen(scene, incoming, ".mqt-new-");
+    try {
+      const error = await assertRejects(
+        () =>
+          publishFile(bytes(PAYLOAD), {
+            path: scene.target,
+            expected: WAS_ORIGINAL,
+            durability,
+          }),
+        AppError,
+      );
+      assertEquals(error.code, "E_TARGET_MODIFIED");
+    } finally {
+      attack.undo();
+    }
+
+    // The handle was opened in the bound directory and the swap landed before a
+    // byte went through it, so the payload is in the directory that was renamed
+    // away. Nothing of it is in the one that took the name.
+    assertEquals(await read(`${scene.lang}/en_us.snbt`), THEIRS);
+    assertEquals(await names(scene.lang), ["en_us.snbt"]);
+    assertEquals(await read(`${scene.moved}/${await temporaryIn(scene.moved)}`), "");
+  });
+});
+
+Deno.test("a parent swapped around the staged name's reservation leaves it nothing", async () => {
+  await withScene(async (scene) => {
+    await Deno.writeTextFile(scene.target, ORIGINAL);
+    const incoming = `${scene.outside}/incoming`;
+    await Deno.mkdir(incoming);
+    await Deno.writeTextFile(`${incoming}/en_us.snbt`, THEIRS);
+
+    const attack = swapInsideOpen(scene, incoming, ".mqt-staged-");
+    try {
+      const error = await assertRejects(
+        () =>
+          publishFile(bytes(PAYLOAD), {
+            path: scene.target,
+            expected: WAS_ORIGINAL,
+            durability,
+          }),
+        AppError,
+      );
+      assertEquals(error.code, "E_TARGET_MODIFIED");
+    } finally {
+      attack.undo();
+    }
+
+    // The reservation was made in the bound directory, so the rename that would
+    // have followed it never ran: the target is still at its own name.
+    assertEquals(await read(`${scene.lang}/en_us.snbt`), THEIRS);
+    assertEquals(await names(scene.lang), ["en_us.snbt"]);
+    assertEquals(await read(`${scene.moved}/en_us.snbt`), ORIGINAL);
+  });
+});
+
+Deno.test("a parent swapped around the hard-link probe is a swap, not a missing primitive", async () => {
+  await withScene(async (scene) => {
+    await Deno.writeTextFile(scene.target, ORIGINAL);
+    const incoming = `${scene.outside}/incoming`;
+    await Deno.mkdir(incoming);
+    await Deno.writeTextFile(`${incoming}/en_us.snbt`, THEIRS);
+
+    const link = Deno.link.bind(Deno);
+    const rename = Deno.rename.bind(Deno);
+    Object.defineProperty(Deno, "link", {
+      configurable: true,
+      value: async (from: string, to: string) => {
+        if (String(to).includes(".mqt-probe-")) {
+          await rename(scene.lang, scene.moved);
+          await rename(incoming, scene.lang);
+        }
+        return await link(from, to);
+      },
+    });
+    try {
+      const error = await assertRejects(
+        () =>
+          publishFile(bytes(PAYLOAD), {
+            path: scene.target,
+            expected: WAS_ORIGINAL,
+            durability,
+          }),
+        AppError,
+      );
+      // Not `E_WRITE` about hard links: the probe failed because it was pointed
+      // at a different directory, and saying "this filesystem cannot do hard
+      // links" would send the player off to reformat a disk that is fine.
+      assertEquals(error.code, "E_TARGET_MODIFIED");
+    } finally {
+      Object.defineProperty(Deno, "link", { configurable: true, value: link });
+    }
+
+    assertEquals(await names(scene.lang), ["en_us.snbt"]);
+    assertEquals(await read(`${scene.moved}/en_us.snbt`), ORIGINAL);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // The other two transactions: creating where nothing is, and deleting.
 // ---------------------------------------------------------------------------
