@@ -6,8 +6,16 @@ export const ZIP_LIMITS = {
   maxEntryBytes: 64 * 1024 * 1024,
   /** Largest total uncompressed size declared by an archive. */
   maxTotalBytes: 2 * 1024 * 1024 * 1024,
-  /** Highest plausible compression ratio before we call it a bomb. */
-  maxCompressionRatio: 200,
+  /**
+   * Highest plausible compression ratio before we call it a bomb, applied only
+   * to entries at or above `ratioCheckFloorBytes`. Highly repetitive text
+   * legitimately compresses several hundred to one (100 KiB of one repeated
+   * character deflates ~820:1), so a low threshold with no floor rejects real
+   * packs. The absolute per-entry and total caps below are the real bound;
+   * this only catches a bomb earlier and more cheaply.
+   */
+  maxCompressionRatio: 500,
+  ratioCheckFloorBytes: 8 * 1024 * 1024,
   maxEntries: 200_000,
 } as const;
 
@@ -15,6 +23,7 @@ export interface ZipReadOptions {
   maxEntryBytes?: number;
   maxTotalBytes?: number;
   maxCompressionRatio?: number;
+  ratioCheckFloorBytes?: number;
   maxEntries?: number;
 }
 
@@ -174,7 +183,8 @@ export async function readZip(
         );
       }
       if (
-        compressedSize > 0 && uncompressedSize / compressedSize > limits.maxCompressionRatio
+        compressedSize > 0 && uncompressedSize >= limits.ratioCheckFloorBytes &&
+        uncompressedSize / compressedSize > limits.maxCompressionRatio
       ) {
         throw new AppError(
           "E_UNSUPPORTED_PACK",

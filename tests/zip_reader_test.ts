@@ -118,14 +118,23 @@ Deno.test("a total uncompressed size over the cap is refused", async () => {
   assertStringIncludes(err.message.toLowerCase(), "total");
 });
 
-Deno.test("an implausible compression ratio is refused", async () => {
+Deno.test("an implausible compression ratio is refused above the size floor", async () => {
   const bytes = await zipOf([{
     name: "ratio.bin",
     data: enc.encode("x".repeat(10)),
-    declaredUncompressedSize: 10_000_000,
+    declaredUncompressedSize: 60_000_000,
   }]);
   const err = await assertRejects(() => readZip(bytes), AppError) as AppError;
   assertStringIncludes(err.message.toLowerCase(), "ratio");
+});
+
+Deno.test("legitimately repetitive small entries are not mistaken for bombs", async () => {
+  // Regression: 100 KiB of one repeated character deflates about 820:1. A ratio
+  // check without a size floor rejects real quest files, which are repetitive.
+  const repetitive = enc.encode("A".repeat(100_000));
+  const bytes = await zipOf([{ name: "repetitive.snbt", data: repetitive, method: "deflate" }]);
+  const zip = await readZip(bytes);
+  assertEquals((await zip.read("repetitive.snbt")).length, 100_000);
 });
 
 Deno.test("too many entries is refused", async () => {
