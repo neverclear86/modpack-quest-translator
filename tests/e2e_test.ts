@@ -537,3 +537,41 @@ Deno.test("the detected FTB Quests version flows into the manifest and README", 
     assertStringIncludes(readme, "2101.1.10");
   });
 });
+
+Deno.test("cancellation leaves a usable cache and no partial output", async () => {
+  await harness(async (h) => {
+    const controller = new AbortController();
+    let batches = 0;
+    // Abort partway through, the way Ctrl+C does.
+    const cancelling = {
+      ...deps(h),
+      signal: controller.signal,
+      stdout: (line: string) => {
+        h.stdout.push(line);
+        if (line.includes("batch ") && ++batches >= 1) controller.abort();
+      },
+    };
+    const code = await run(baseArgs(h, ["--batch-size", "1"]), cancelling);
+    assertEquals(code, 130);
+
+    // No archive and no sidecar was written.
+    for (const file of ["out.zip", "out.manifest.json", "out.report.json", "out.README.md"]) {
+      await assertRejects(() => Deno.stat(`${h.dir}/${file}`));
+    }
+
+    // The cache is valid JSON and holds the completed work, so a rerun resumes.
+    let cacheEntries = 0;
+    for await (const entry of Deno.readDir(h.cacheDir)) {
+      assertEquals(entry.name.endsWith(".tmp"), false, "a temp file was left behind");
+      const parsed = JSON.parse(await Deno.readTextFile(`${h.cacheDir}/${entry.name}`));
+      cacheEntries += Object.keys(parsed.entries).length;
+    }
+    assertEquals(cacheEntries > 0, true, "cancelling lost every completed batch");
+
+    const resumed = { ...h, stdout: [] as string[], stderr: [] as string[] };
+    assertEquals(await run(baseArgs(h), deps(resumed)), 0, resumed.stderr.join("\n"));
+    const report = JSON.parse(await Deno.readTextFile(`${h.dir}/out.report.json`));
+    assertEquals(report.cached > 0, true, "the resumed run did not reuse the cached work");
+    assertEquals(report.failed.length, 0);
+  });
+});
