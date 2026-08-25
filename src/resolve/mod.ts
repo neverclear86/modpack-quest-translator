@@ -1,6 +1,6 @@
 import { AppError } from "../errors.ts";
 import type { BoundedHttpClient } from "../net/http.ts";
-import { classifyPackUrl } from "./url.ts";
+import { classifyPackUrl, decodePathComponent } from "./url.ts";
 import { resolveCurseForge } from "./curseforge.ts";
 import { resolveModrinth } from "./modrinth.ts";
 import { describePack, type ResolvedPack } from "./types.ts";
@@ -62,12 +62,21 @@ export function resolveLocalArchive(path: string): ResolvedPack {
 }
 
 function fileNameFromUrl(url: string): string {
+  let parsed: URL;
   try {
-    const parsed = new URL(url);
-    const last = parsed.pathname.split("/").filter(Boolean).pop();
-    if (last) return decodeURIComponent(last);
+    parsed = new URL(url);
   } catch {
-    // Fall through to the generic name.
+    throw new AppError("E_INVALID_INPUT", `Could not derive a file name from ${url}`, {
+      hint: "Pass a direct https URL ending in .zip or .mrpack.",
+    });
   }
-  throw new AppError("E_INVALID_INPUT", `Could not derive a file name from ${url}`);
+  const last = parsed.pathname.split("/").filter(Boolean).pop();
+  if (!last) {
+    throw new AppError("E_INVALID_INPUT", `Could not derive a file name from ${url}`, {
+      hint: "A direct archive URL needs a file name in its path, ending in .zip or .mrpack.",
+    });
+  }
+  // Reachable with input classifyPackUrl never saw, such as a redirect target,
+  // so it raises the same actionable error rather than a bare URIError.
+  return decodePathComponent(last, url);
 }

@@ -99,3 +99,43 @@ Deno.test("plain http is allowed but recorded as insecure", () => {
   assertEquals(r.kind, "direct");
   assertEquals(r.insecure, true);
 });
+
+Deno.test("a malformed percent-escape is actionable invalid input, not an internal error", () => {
+  // decodeURIComponent throws a bare URIError("URI malformed"). Left alone it
+  // escaped classification as an unhandled internal failure and exited 1,
+  // telling the user to file a bug about their own typo.
+  for (
+    const bad of [
+      "https://example.com/%E0%A4%A.zip",
+      "https://www.curseforge.com/minecraft/modpacks/%E0%A4%A",
+      "https://modrinth.com/modpack/%E0%A4%A",
+      "https://example.com/pack%.zip",
+      "https://example.com/pack%zz.zip",
+      "https://example.com/%.mrpack",
+    ]
+  ) {
+    const err = assertThrows(() => classifyPackUrl(bad), AppError, undefined, bad) as AppError;
+    assertEquals(err.code, "E_INVALID_INPUT", bad);
+    assertEquals(err.exitCode, 2, bad);
+    assertEquals(err.message.includes("percent-encoding"), true, bad);
+    assertEquals(typeof err.hint, "string", bad);
+    // The raw engine wording must not be what the user is shown.
+    assertEquals(err.message.includes("URI malformed"), false, bad);
+  }
+});
+
+Deno.test("well-formed percent-escapes are still decoded normally", () => {
+  const cf = classifyPackUrl("https://www.curseforge.com/minecraft/modpacks/all%2Dof%2Dcreate");
+  assertEquals(cf.kind, "curseforge");
+  assertEquals(cf.slug, "all-of-create");
+  // A fully escaped multi-byte character is valid and must survive.
+  const mr = classifyPackUrl("https://modrinth.com/modpack/%E3%81%82");
+  assertEquals(mr.kind, "modrinth");
+  assertEquals(mr.slug, "あ");
+  assertEquals(classifyPackUrl("https://example.com/%E3%81%82.zip").kind, "direct");
+});
+
+Deno.test("a malformed escape outside the path does not reject a good url", () => {
+  // Only the path is decoded, so a stray % in the query is not our business.
+  assertEquals(classifyPackUrl("https://example.com/pack.zip?token=100%").kind, "direct");
+});

@@ -40,11 +40,44 @@ function parse(raw: string): URL {
       { hint: HINT },
     );
   }
+  // Checked once, here, so a direct archive URL fails the same way a CurseForge
+  // or Modrinth one does rather than surviving classification and blowing up
+  // later while deriving a file name. Only the path is decoded, so a stray `%`
+  // in a query string is not our business.
+  decodePathComponent(url.pathname, url.toString());
   return url;
 }
 
+const ENCODING_HINT = "A `%` in a URL starts a percent-escape and must be followed by two hex " +
+  "digits, and a multi-byte character must be escaped in full (`%E3%81%82`). To pass a literal " +
+  "percent sign, write it as `%25`.";
+
+/**
+ * Percent-decode one path component, or explain why it cannot be decoded.
+ *
+ * `decodeURIComponent` throws a bare `URIError: URI malformed`. Left to escape,
+ * that reached the CLI as an unhandled internal failure -- exit 1, "please
+ * report it with the command you ran" -- for what is simply a mistyped URL.
+ * A user typo is invalid input: exit 2, with the rule that was broken.
+ */
+export function decodePathComponent(component: string, url: string): string {
+  try {
+    return decodeURIComponent(component);
+  } catch {
+    throw new AppError(
+      "E_INVALID_INPUT",
+      `The URL contains malformed percent-encoding and cannot be decoded: ${url}`,
+      { hint: ENCODING_HINT },
+    );
+  }
+}
+
 function segments(url: URL): string[] {
-  return url.pathname.split("/").filter((s) => s.length > 0).map(decodeURIComponent);
+  const source = url.toString();
+  return url.pathname
+    .split("/")
+    .filter((s) => s.length > 0)
+    .map((segment) => decodePathComponent(segment, source));
 }
 
 function hostIs(url: URL, domain: string): boolean {

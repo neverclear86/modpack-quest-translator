@@ -633,3 +633,30 @@ Deno.test("end to end: a corrupt cache entry is refused and retranslated", async
     assertEquals(thirdReport.translated, 0, "the third run should be a pure cache hit");
   });
 });
+
+Deno.test("a malformed percent-encoded url exits 2 with actionable guidance", async () => {
+  for (
+    const bad of [
+      "https://example.com/%E0%A4%A.zip",
+      "https://www.curseforge.com/minecraft/modpacks/%E0%A4%A",
+      "https://modrinth.com/modpack/%E0%A4%A",
+    ]
+  ) {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await run(
+      ["--url", bad, "--target", "ja_jp", "--output", "/tmp/mqt-unused.zip", "--dry-run"],
+      {
+        stdout: (line) => stdout.push(line),
+        stderr: (line) => stderr.push(line),
+        env: {},
+        fetch: () => Promise.reject(new Error("the network must not be reached")),
+      },
+    );
+    assertEquals(code, 2, `${bad} -> ${stderr.join("\n")}`);
+    const message = stderr.join("\n");
+    assertStringIncludes(message, "percent-encoding");
+    assertEquals(message.includes("internal error"), false, bad);
+    assertEquals(message.includes("URI malformed"), false, bad);
+  }
+});
