@@ -517,23 +517,37 @@ deno task bundle \
 `deno task bundle` is `build:installers` followed by `package-installer --binaries dist/bin`, so it
 needs only `--overlay` and `--output`.
 
-| Flag                                               | Behaviour                                                                                                        |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `--overlay <zip>`                                  | Required. The raw overlay archive from a translation run                                                         |
-| `--output <zip\|dir>`                              | Required. A `.zip` path is that exact file; anything else is a directory, written as `<bundle-id>-installer.zip` |
-| `--binaries <dir>`                                 | Directory holding the compiled installers, as produced by `deno task build:installers`                           |
-| `--linux-binary <path>`, `--windows-binary <path>` | Explicit paths, overriding `--binaries`                                                                          |
-| `--no-binaries`                                    | Package with no executables. The bundle README and manifest both say it cannot be double-clicked                 |
-| `--manifest`, `--report`                           | The translation sidecars, if not the copies inside the overlay or beside it                                      |
-| `--bundle-id <id>`                                 | The top-level directory name inside the bundle. Defaults to the overlay's file stem                              |
-| `--generated-at <iso>`                             | Overrides the timestamp, which otherwise comes from the translation manifest                                     |
-| `--force`, `--json`, `--quiet`                     | As in the translator                                                                                             |
+| Flag                                               | Behaviour                                                                                                                   |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `--overlay <zip>`                                  | Required. The raw overlay archive from a translation run                                                                    |
+| `--output <zip\|dir>`                              | Required. A `.zip` path is that exact file; anything else is a directory, written as `<bundle-id>-installer.zip`            |
+| `--binaries <dir>`                                 | Directory holding the compiled installers, as produced by `deno task build:installers`                                      |
+| `--linux-binary <path>`, `--windows-binary <path>` | Explicit paths, overriding `--binaries`                                                                                     |
+| `--no-binaries`                                    | Package with no executables. The bundle README and manifest both say it cannot be double-clicked                            |
+| `--manifest`, `--report`                           | The translation sidecars, if not the copies inside the overlay or beside it                                                 |
+| `--bundle-id <id>`                                 | The top-level directory name inside the bundle. Letters, digits, `.`, `-` and `_` only. Defaults to the overlay's file stem |
+| `--generated-at <iso>`                             | Overrides the timestamp, which otherwise comes from the translation manifest                                                |
+| `--force`, `--json`, `--quiet`                     | As in the translator                                                                                                        |
 
 The packager copies **only** entries the overlay holds under `config/ftbquests/quests/lang/`;
-anything else is refused with exit code 10. That is the mechanical guarantee that the pack's own
-English prose is never redistributed inside a bundle. Packaging the same overlay with the same
-binaries twice is byte-identical — the ZIP writer sorts entries and fixes timestamps, and
-`generatedAt` comes from the translation run rather than the clock.
+anything else is refused with exit code 10. On its own that allowlist would not stop the pack's own
+`en_us.snbt` — it lives in that directory too — so before a byte is copied the overlay also has to
+be recognisable as a finished run of this tool: both translation sidecars present and this tool's,
+locales that differ, an empty `failed` list, and a payload whose per-key digests are **not** the
+ones the run recorded for the text it read. A file that digests to the source key for key is the
+source, and is refused. `--generated-at` overrides only the timestamp; it is not a way past the
+check.
+
+That is what keeps the pack's own English prose out of a bundle. It is not a signature and is not
+claimed as one — a manifest is a JSON file, and someone determined to lie can write one that agrees
+with a payload they also wrote. What it makes impossible is the accident, which is the failure this
+project actually has. The same goes for the bundle's own digests: `bundle-manifest.json` sits beside
+the payload it describes, so its SHA-256 entries catch a corrupt download rather than a deliberate
+edit, and the bundle README says so in both languages.
+
+Packaging the same overlay with the same binaries twice is byte-identical — the ZIP writer sorts
+entries and fixes timestamps, and `generatedAt` comes from the translation run rather than the
+clock.
 
 `bin/*` and the two `.sh` launchers carry mode `0755` in the ZIP; everything else is `0644`.
 
@@ -545,9 +559,9 @@ deno task e2e:bundle --overlay ./dist/some-pack.zip   # package an overlay you a
 ```
 
 Deliberately not a `deno test`: it spawns real processes and runs the real compiled Linux binary
-against a real instance tree — install, reinstall, tampered payload, uninstall, byte-for-byte
-restore — and asserts the Windows executable is a PE image. Windows _runtime_ behaviour is not
-tested from Linux and no such claim is made.
+against a real instance tree — install, reinstall, a payload edited without its manifest, uninstall,
+byte-for-byte restore — and asserts the Windows executable is a PE image. Windows _runtime_
+behaviour is not tested from Linux and no such claim is made.
 
 See [DESIGN.md](DESIGN.md) for the architecture and the reasoning behind each decision, and
 [REQUIREMENTS.md](REQUIREMENTS.md) for the approved scope.

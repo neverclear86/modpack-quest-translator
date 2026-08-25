@@ -38,20 +38,20 @@ per platform, and the launchers are a plain `.cmd` and a POSIX `sh` script.
 
 ### 2.2 Hazards and mitigations
 
-| #  | Hazard                                                                                           | Mitigation                                                                                                                                                                                                                                             |
-| -- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1  | Bundle payload declares a traversal path (`../../saves/level.dat`)                               | Payload paths go through `normaliseEntryPath`, then an allowlist: only `config/ftbquests/quests/lang/*.snbt`                                                                                                                                           |
-| 2  | Bundle payload tampered with after packaging                                                     | `bundle-manifest.json` carries a SHA-256 per payload file; install verifies every one before touching anything                                                                                                                                         |
-| 3  | User drags the wrong folder onto the launcher                                                    | The instance root must contain both `mods/` and `config/` as real directories, or install refuses (`E_INSTANCE`)                                                                                                                                       |
-| 4  | Target, or a directory on the way to it, is a symlink pointing outside                           | `lstat` on the target and on every path component inside the root; a symlink is refused outright — `--force` does not override                                                                                                                         |
-| 4b | `.mqt-installer/`, `backups/`, a backup, a sidecar or `state.json` is a symlink pointing outside | The same component walk, re-run at **every** read and write boundary (§5.6); directories are created a level at a time, never `mkdir --recursive`                                                                                                      |
-| 5  | Resolved target escapes the instance root anyway                                                 | `realpath(target's parent)` must be a prefix of `realpath(instanceRoot)`; checked after resolution, not before                                                                                                                                         |
-| 6  | Install interrupted (power loss, Ctrl+C, closed console)                                         | Every write is temp-in-destination-dir → `fsync` → `rename` → `fsync` the directory, and a flush that fails **aborts before the target is replaced** (§6.1). Backup inventory is rebuilt from on-disk sidecars, so a half-done run converges on re-run |
-| 7  | Repeated install overwrites the real backup with the Japanese file                               | A file whose SHA-256 matches **any** known payload digest is never captured as an original backup (§5.3). This is the single load-bearing rule                                                                                                         |
-| 8  | Backup deleted, truncated or corrupted, then uninstall runs                                      | Every backup is verified against its sidecar hash and size before use; a failure is an actionable error and **nothing is written** (`E_BACKUP`)                                                                                                        |
-| 9  | Uninstall clobbers edits the user made after installing                                          | The installed file's hash must still match what was installed, else `E_TARGET_MODIFIED`. `--force` proceeds but backs the modified file up first                                                                                                       |
-| 10 | We redistribute ACA's English prose                                                              | The packager copies payload bytes only from the translated overlay ZIP; `bundle-manifest.json` records `containsSourceProse: false`; backups exist only on the user's own disk                                                                         |
-| 11 | The installer executable does something other than install                                       | Compiled with `--allow-read --allow-write` only. No `--allow-net`, no `--allow-run`, no `--allow-env`, no `-A`. It structurally cannot phone home or spawn anything                                                                                    |
+| #  | Hazard                                                                                           | Mitigation                                                                                                                                                                                                                                                                                                                                                        |
+| -- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1  | Bundle payload declares a traversal path (`../../saves/level.dat`)                               | Payload paths go through `normaliseEntryPath`, then an allowlist: only `config/ftbquests/quests/lang/*.snbt`                                                                                                                                                                                                                                                      |
+| 2  | Bundle payload **damaged** after packaging                                                       | `bundle-manifest.json` carries a SHA-256 per payload file; install verifies every one before touching anything. This catches a corrupt download, **not** a deliberate edit: the bundle is unsigned, so whoever can rewrite a payload can rewrite the manifest beside it (§2.3)                                                                                    |
+| 3  | User drags the wrong folder onto the launcher                                                    | The instance root must contain both `mods/` and `config/` as real directories, or install refuses (`E_INSTANCE`)                                                                                                                                                                                                                                                  |
+| 4  | Target, or a directory on the way to it, is a symlink pointing outside                           | `lstat` on the target and on every path component inside the root; a symlink is refused outright — `--force` does not override                                                                                                                                                                                                                                    |
+| 4b | `.mqt-installer/`, `backups/`, a backup, a sidecar or `state.json` is a symlink pointing outside | The same component walk, re-run at **every** read and write boundary (§5.6); directories are created a level at a time, never `mkdir --recursive`                                                                                                                                                                                                                 |
+| 5  | Resolved target escapes the instance root anyway                                                 | `realpath(target's parent)` must be a prefix of `realpath(instanceRoot)`; checked after resolution, not before                                                                                                                                                                                                                                                    |
+| 6  | Install interrupted (power loss, Ctrl+C, closed console)                                         | Every write is temp-in-destination-dir → `fsync` → `rename` → `fsync` the directory, and a flush that fails **aborts before the target is replaced** (§6.1). Backup inventory is rebuilt from on-disk sidecars, so a half-done run converges on re-run                                                                                                            |
+| 7  | Repeated install overwrites the real backup with the Japanese file                               | A file whose SHA-256 matches **any** known payload digest is never captured as an original backup (§5.3). This is the single load-bearing rule                                                                                                                                                                                                                    |
+| 8  | Backup deleted, truncated or corrupted, then uninstall runs                                      | Every backup is verified against its sidecar hash and size before use; a failure is an actionable error and **nothing is written** (`E_BACKUP`)                                                                                                                                                                                                                   |
+| 9  | Uninstall clobbers edits the user made after installing                                          | The installed file's hash must still match what was installed, else `E_TARGET_MODIFIED`. `--force` proceeds but backs the modified file up first                                                                                                                                                                                                                  |
+| 10 | We redistribute ACA's English prose                                                              | The packager refuses an overlay it cannot recognise as a finished run of this tool, and re-computes the run's per-key source digests over the payload: a file that still digests to the source key for key **is** the source and is refused (§8.1). `containsSourceProse: false` is that check's result, not a promise. Backups exist only on the user's own disk |
+| 11 | The installer executable does something other than install                                       | Compiled with `--allow-read --allow-write` only. No `--allow-net`, no `--allow-run`, no `--allow-env`, no `-A`. It structurally cannot phone home or spawn anything                                                                                                                                                                                               |
 
 ### 2.3 Explicit non-goals
 
@@ -66,6 +66,15 @@ per platform, and the launchers are a plain `.cmd` and a POSIX `sh` script.
 - The executables are **unsigned**. Windows SmartScreen will show "Windows protected your PC" on
   first run; the bundle README says so in Japanese and English and explains _More info → Run
   anyway_. Code signing needs a certificate the project does not have.
+- **The bundle as a whole is unsigned too, and its digests are not an authenticity check.**
+  `bundle-manifest.json` is a plain file sitting beside the payload it describes, so anyone who can
+  replace a payload can replace the manifest in the same move and the install will verify happily.
+  What the per-payload SHA-256 does catch is a download that arrived damaged, a half-extracted ZIP
+  and a payload that was swapped without the manifest — real failures, and the ones a player
+  actually hits. The binary digests are weaker still: nothing in the bundle verifies them at run
+  time, because the launcher that would do the checking is the thing being replaced. They exist for
+  a human or a CI job comparing a download against a published value. The bundle README says all of
+  this in both languages rather than letting a manifest full of hashes imply otherwise.
 - No elevation is requested or needed. Anything requiring administrator rights is a bug.
 - No network access, no telemetry, no auto-update.
 
@@ -560,8 +569,29 @@ deno task package-installer \
 
 The packager **only** copies entries the overlay itself contains under
 `config/ftbquests/quests/lang/`. Anything else in the overlay (a `.jar`, a stray `en_us` file from
-outside the payload) is refused with `E_BUNDLE`. That is the mechanical guarantee behind "never
-bundle or redistribute ACA original English prose".
+outside the payload) is refused with `E_BUNDLE`.
+
+That allowlist is necessary and not sufficient: the pack's own `en_us.snbt` is a file under that
+directory, so on its own the allowlist would have copied ACA's English prose into `payload/` under a
+manifest recording `containsSourceProse: false`. Before any of it is copied,
+`verifyTranslationProvenance` therefore requires the overlay to be a finished run of this tool:
+
+- `translation-manifest.json` and `translation-report.json` are both present, are this tool's, name
+  a real ISO-8601 `generatedAt`, and carry well-formed locales that differ from each other;
+- the report's `failed` list is empty, so a partial run is never packaged;
+- `keyCounts` accounts for at least one string translated, cached or fallen back;
+- the payload is the single file the run's own locale and `overrideEnglish` say it produced;
+- and the load-bearing one: a run records a digest per SNBT key of the text it _read_, and
+  re-computing those over the payload has to yield the same key set while **not** reproducing every
+  digest. A file that digests to the source key for key _is_ the source.
+
+`--generated-at` overrides the timestamp for reproducibility and is not a way past any of it.
+
+What this is not is a signature. A manifest is a JSON file, and someone determined to lie can write
+one that agrees with a payload they also wrote. What it does make impossible is the _accident_ —
+pointing `--overlay` at the pack's own quest file, or at a run that did not finish — which is the
+failure mode this project actually has. `containsSourceProse: false` is the result of that check and
+is described that way in the bundle README, rather than as a promise the format cannot keep.
 
 Supporting tasks:
 

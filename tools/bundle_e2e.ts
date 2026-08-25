@@ -14,9 +14,13 @@
  * What it proves, in order: the translator still emits an overlay; the packager
  * turns that overlay into a bundle; a third-party unzip can read the bundle and
  * gets the execute bits; the shell launcher installs, is idempotent, and
- * restores byte-for-byte; a tampered payload is refused; and the Windows
- * executable is a PE image. Windows *runtime* behaviour is not tested here and
- * no such claim is made.
+ * restores byte-for-byte; a payload edited without its manifest is refused; and
+ * the Windows executable is a PE image.
+ *
+ * Two things it deliberately does not claim. Windows *runtime* behaviour is not
+ * tested from Linux. And the payload refusal below is a digest check, not an
+ * authenticity one: an edit that updates `bundle-manifest.json` to match would
+ * install, because the bundle is unsigned (INSTALLER_DESIGN.md 2.3).
  */
 import { readZip } from "../src/archive/zip/reader.ts";
 import { writeZip } from "../src/archive/zip/writer.ts";
@@ -365,8 +369,8 @@ async function main(): Promise<void> {
   console.log("\nchecking the refusals...");
   const payloadPath = `${bundleDir}/payload/${target}`;
   const goodPayload = await Deno.readFile(payloadPath);
-  await Deno.writeTextFile(payloadPath, `${payloadText}// tampered\n`);
-  const tampered = await run(`${bundleDir}/bin/mqt-installer-linux-x86_64`, [
+  await Deno.writeTextFile(payloadPath, `${payloadText}// edited after packaging\n`);
+  const editedPayload = await run(`${bundleDir}/bin/mqt-installer-linux-x86_64`, [
     "install",
     "--bundle",
     bundleDir,
@@ -375,8 +379,8 @@ async function main(): Promise<void> {
     "--force",
   ], { expect: 10 });
   check(
-    "a tampered payload is refused with E_BUNDLE, even under --force",
-    tampered.code === 10 && tampered.stderr.includes("E_BUNDLE"),
+    "a payload edited without its manifest is refused with E_BUNDLE, even under --force",
+    editedPayload.code === 10 && editedPayload.stderr.includes("E_BUNDLE"),
   );
   await Deno.writeFile(payloadPath, goodPayload);
 
