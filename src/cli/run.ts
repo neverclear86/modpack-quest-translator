@@ -157,6 +157,13 @@ async function execute(
   const archive = await readZip(archiveBytes, { maxTotalBytes: options.maxDownloadBytes * 4 });
   const source = await discoverQuestSource(archive, { sourceLocale: options.sourceLocale });
   reporter.stage("inspect", `${source.flavour} archive, quest source ${source.path}`);
+  reporter.detail(
+    source.questModVersion
+      ? `FTB Quests ${source.questModVersion} detected${
+        source.questModFile ? ` (${source.questModFile})` : ""
+      }`
+      : "FTB Quests version could not be detected from the pack's file list",
+  );
   if (source.alternates.length > 0) {
     reporter.detail(`also present (not used): ${source.alternates.join(", ")}`);
   }
@@ -239,6 +246,8 @@ async function execute(
     fallbackModel: options.fallbackModel,
     archiveFlavour: source.flavour,
     sourcePath: source.path,
+    questModVersion: source.questModVersion,
+    questModFile: source.questModFile,
     sourceKeyDigests,
     updateDiff,
   };

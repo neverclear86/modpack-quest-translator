@@ -163,3 +163,50 @@ Deno.test("a malformed manifest does not fail discovery", async () => {
   assertEquals(found.packInfo.name, undefined);
   assertEquals(found.flavour, "curseforge");
 });
+
+Deno.test("the FTB Quests mod version is detected from a Modrinth index", async () => {
+  const zip = await archiveOf({
+    "modrinth.index.json": JSON.stringify({
+      name: "Pack",
+      versionId: "1.0",
+      files: [
+        { path: "mods/sodium-0.6.0.jar", downloads: [] },
+        { path: "mods/ftb-quests-neoforge-2101.1.10.jar", downloads: [] },
+      ],
+    }),
+    "overrides/config/ftbquests/quests/lang/en_us.snbt": LANG,
+  });
+  const found = await discoverQuestSource(zip, { sourceLocale: "en_us" });
+  assertEquals(found.questModVersion, "2101.1.10");
+  assertEquals(found.questModFile, "ftb-quests-neoforge-2101.1.10.jar");
+});
+
+Deno.test("the FTB Quests mod version is detected from a jar shipped in overrides", async () => {
+  const zip = await archiveOf({
+    "manifest.json": "{}",
+    "overrides/mods/ftbquests-forge-1902.4.15-build.279.jar": "jar",
+    "overrides/config/ftbquests/quests/lang/en_us.snbt": LANG,
+  });
+  const found = await discoverQuestSource(zip, { sourceLocale: "en_us" });
+  assertEquals(found.questModVersion, "1902.4.15-build.279");
+});
+
+Deno.test("an undetectable FTB Quests version is reported as unknown, not guessed", async () => {
+  const zip = await archiveOf({
+    "manifest.json": JSON.stringify({ name: "P", files: [{ projectID: 1, fileID: 2 }] }),
+    "overrides/config/ftbquests/quests/lang/en_us.snbt": LANG,
+  });
+  const found = await discoverQuestSource(zip, { sourceLocale: "en_us" });
+  assertEquals(found.questModVersion, undefined);
+});
+
+Deno.test("a non-quest mod whose name merely contains quests is not matched", async () => {
+  const zip = await archiveOf({
+    "modrinth.index.json": JSON.stringify({
+      files: [{ path: "mods/betterquesting-3.5.jar", downloads: [] }],
+    }),
+    "config/ftbquests/quests/lang/en_us.snbt": LANG,
+  });
+  const found = await discoverQuestSource(zip, { sourceLocale: "en_us" });
+  assertEquals(found.questModVersion, undefined);
+});

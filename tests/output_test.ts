@@ -259,3 +259,52 @@ Deno.test("output file names are filesystem safe", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("the README qualifies its server/client advice against the detected FTB Quests version", async () => {
+  const known = await readZip(
+    await buildOverlay({
+      translatedSnbt: TRANSLATED,
+      meta: { ...BASE_META, overrideEnglish: true, questModVersion: "2101.1.10" },
+      report: BASE_REPORT,
+      layout: "instance",
+      redactor: new Redactor(),
+    }),
+  );
+  const text = await known.readText("README.md");
+  assertStringIncludes(text, "2101.1.10");
+  assertStringIncludes(text, "FTB Quests");
+
+  // When it cannot be detected the README must say so rather than imply it was
+  // checked: the advice is only as good as the evidence behind it.
+  const unknown = await readZip(
+    await buildOverlay({
+      translatedSnbt: TRANSLATED,
+      meta: { ...BASE_META, overrideEnglish: true },
+      report: BASE_REPORT,
+      layout: "instance",
+      redactor: new Redactor(),
+    }),
+  );
+  const unknownText = await unknown.readText("README.md");
+  assertStringIncludes(unknownText, "could not be detected");
+  assertStringIncludes(unknownText, "検出できません");
+});
+
+Deno.test("the detected FTB Quests version is recorded in the manifest", async () => {
+  const zip = await readZip(
+    await buildOverlay({
+      translatedSnbt: TRANSLATED,
+      meta: {
+        ...BASE_META,
+        questModVersion: "2101.1.10",
+        questModFile: "ftb-quests-neoforge-2101.1.10.jar",
+      },
+      report: BASE_REPORT,
+      layout: "instance",
+      redactor: new Redactor(),
+    }),
+  );
+  const manifest = JSON.parse(await zip.readText("translation-manifest.json"));
+  assertEquals(manifest.questMod.version, "2101.1.10");
+  assertEquals(manifest.questMod.file, "ftb-quests-neoforge-2101.1.10.jar");
+});

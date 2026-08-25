@@ -44,6 +44,7 @@ export function buildManifest(meta: OverlayMeta, redactor: Redactor): string {
     },
     sourceArchiveSha256: meta.sourceArchiveSha256,
     sourcePath: meta.sourcePath,
+    questMod: { version: meta.questModVersion, file: meta.questModFile },
     sourceLocale: meta.sourceLocale,
     targetLocale: meta.targetLocale,
     targetLanguage: meta.targetLanguage,

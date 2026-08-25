@@ -23,6 +23,9 @@ export interface OverlayMeta {
   archiveFlavour: ArchiveFlavour;
   /** Path of the source lang file inside the pack archive. */
   sourcePath: string;
+  /** Detected FTB Quests mod version, when the pack's file list revealed one. */
+  questModVersion?: string;
+  questModFile?: string;
   keyCounts?: KeyCounts;
   /** Per-key digest of the source values, so a later run can diff against it. */
   sourceKeyDigests?: Record<string, string>;

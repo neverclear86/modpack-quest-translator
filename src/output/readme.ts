@@ -111,10 +111,16 @@ export function buildReadme(meta: OverlayMeta, layout: OverlayLayout): string {
     "### Verify before trusting this on a live world",
     "",
     "The install advice above is based on the pack layout detected during generation",
-    `(\`${meta.archiveFlavour}\` archive, source file \`${meta.sourcePath}\`). Confirm it against`,
-    "the FTB Quests version your pack actually ships, and back up your world first.",
-    "Quest **progress** is stored separately from quest text and is not affected by this",
-    "overlay, but a backup costs nothing.",
+    `(\`${meta.archiveFlavour}\` archive, source file \`${meta.sourcePath}\`).`,
+    meta.questModVersion
+      ? `The pack ships **FTB Quests ${meta.questModVersion}**` +
+        `${meta.questModFile ? ` (\`${meta.questModFile}\`)` : ""}, which is the version the` +
+        " server/client notes above were written against."
+      : "The FTB Quests version **could not be detected** from this pack's file list, so the" +
+        " server/client notes above are the general behaviour of modern FTB Quests rather than" +
+        " a checked fact for your exact build. Confirm them against the version your pack ships.",
+    "Back up your world first. Quest **progress** is stored separately from quest text and is",
+    "not affected by this overlay, but a backup costs nothing.",
     "",
     "### Provenance",
     "",
@@ -124,6 +130,7 @@ export function buildReadme(meta: OverlayMeta, layout: OverlayLayout): string {
     `minecraft     ${meta.minecraftVersion ?? "(unknown)"}`,
     `loader        ${meta.loader ?? "(unknown)"}`,
     `source file   ${meta.sourcePath}`,
+    `ftb quests    ${meta.questModVersion ?? "(not detected)"}`,
     `source sha256 ${meta.sourceArchiveSha256}`,
     `mode          ${mode}`,
     `provider      ${meta.provider} (${meta.model})`,
@@ -222,9 +229,15 @@ export function buildReadme(meta: OverlayMeta, layout: OverlayLayout): string {
     "",
     `上記の手順は生成時に検出したパック構成（\`${meta.archiveFlavour}\` 形式、`,
     `元ファイル \`${meta.sourcePath}\`）に基づいています。`,
-    "実際に同梱されている FTB Quests のバージョンで確認し、事前にワールドのバックアップを",
-    "取ってください。クエストの**進行状況**はテキストとは別に保存されるため、このオーバーレイ",
-    "では失われませんが、バックアップは取っておいて損はありません。",
+    meta.questModVersion
+      ? `このパックが同梱している FTB Quests は **${meta.questModVersion}**` +
+        `${meta.questModFile ? `（\`${meta.questModFile}\`）` : ""} で、` +
+        "上記のサーバー/クライアントに関する記述はこのバージョンを前提にしています。"
+      : "このパックのファイル一覧からは FTB Quests のバージョンを**検出できません**でした。" +
+        "上記のサーバー/クライアントに関する記述は最近の FTB Quests の一般的な挙動であり、" +
+        "お使いのビルドで確認した結果ではありません。実際のバージョンでご確認ください。",
+    "事前にワールドのバックアップを取ってください。クエストの**進行状況**はテキストとは別に",
+    "保存されるため、このオーバーレイでは失われませんが、バックアップは取っておいて損はありません。",
     "",
     "### 生成情報",
     "",

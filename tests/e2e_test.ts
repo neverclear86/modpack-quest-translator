@@ -18,7 +18,10 @@ async function packBytes(): Promise<Uint8Array> {
         name: "Rubius Cobblemon",
         versionId: "0.9",
         dependencies: { minecraft: "1.21.1", neoforge: "21.1.228" },
-        files: [],
+        files: [
+          { path: "mods/ftb-quests-neoforge-2101.1.10.jar", downloads: [] },
+          { path: "mods/sodium-0.6.0.jar", downloads: [] },
+        ],
       }),
     },
     { path: "overrides/config/ftbquests/quests/lang/en_us.snbt", text: LANG },
@@ -522,5 +525,15 @@ Deno.test("a resolver-reported version still wins over the in-archive manifest",
     );
     assertEquals(manifest.pack.version, "0.9");
     assertEquals(manifest.pack.name, "Rubius Cobblemon");
+  });
+});
+
+Deno.test("the detected FTB Quests version flows into the manifest and README", async () => {
+  await harness(async (h) => {
+    assertEquals(await run(baseArgs(h), deps(h)), 0, h.stderr.join("\n"));
+    const manifest = JSON.parse(await Deno.readTextFile(`${h.dir}/out.manifest.json`));
+    assertEquals(manifest.questMod.version, "2101.1.10");
+    const readme = await Deno.readTextFile(`${h.dir}/out.README.md`);
+    assertStringIncludes(readme, "2101.1.10");
   });
 });

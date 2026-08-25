@@ -25,6 +25,14 @@ export interface QuestSource {
   chapterFiles: ChapterFile[];
   /** Other roots that also contained a lang file, for reporting. */
   alternates: string[];
+  /**
+   * Version of the FTB Quests mod the pack actually ships, when it can be read
+   * from the pack's file list. The generated README's server/client advice is
+   * qualified against this rather than assumed.
+   */
+  questModVersion?: string;
+  /** The jar the version was read from, for provenance. */
+  questModFile?: string;
 }
 
 export interface DiscoverOptions {
@@ -84,6 +92,8 @@ export async function discoverQuestSource(
     options.maxChapterFiles ?? DEFAULT_MAX_CHAPTER_FILES,
   );
 
+  const questMod = await detectQuestMod(archive, flavour);
+
   return {
     root: chosen.root,
     path: chosen.path,
@@ -93,7 +103,53 @@ export async function discoverQuestSource(
     adapter: selection.adapter,
     chapterFiles,
     alternates: matches.slice(1).map((m) => m.path),
+    questModVersion: questMod?.version,
+    questModFile: questMod?.file,
   };
+}
+
+/**
+ * `ftb-quests-neoforge-2101.1.10.jar` -> `2101.1.10`.
+ * Deliberately narrow: only jars whose name starts with the FTB Quests mod id
+ * match, so an unrelated questing mod is never reported as this one.
+ */
+const FTB_QUESTS_JAR = /^ftb[-_]?quests[-_].*?[-_](\d[\w.\-+]*)\.jar$/i;
+
+function questModFromFileName(fileName: string): string | undefined {
+  const match = FTB_QUESTS_JAR.exec(fileName);
+  return match ? match[1] : undefined;
+}
+
+async function detectQuestMod(
+  archive: ZipArchive,
+  flavour: ArchiveFlavour,
+): Promise<{ version: string; file: string } | undefined> {
+  // Modrinth lists mod jars in its index; they are downloaded, not bundled.
+  if (flavour === "modrinth") {
+    try {
+      const index = JSON.parse(await archive.readText("modrinth.index.json")) as {
+        files?: { path?: string }[];
+      };
+      for (const entry of index.files ?? []) {
+        const name = (entry.path ?? "").split("/").pop() ?? "";
+        const version = questModFromFileName(name);
+        if (version) return { version, file: name };
+      }
+    } catch {
+      // Metadata only; never fatal.
+    }
+  }
+
+  // Either flavour may also ship the jar inside the archive.
+  for (const entry of archive.files()) {
+    const name = entry.path.split("/").pop() ?? "";
+    const version = questModFromFileName(name);
+    if (version) return { version, file: name };
+  }
+
+  // A CurseForge manifest references files by numeric id only, so there is
+  // nothing to read there. Reporting "unknown" is better than guessing.
+  return undefined;
 }
 
 function detectFlavour(archive: ZipArchive): ArchiveFlavour {
