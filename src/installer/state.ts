@@ -1,4 +1,5 @@
 import { AppError } from "../errors.ts";
+import type { Durability } from "../util/durable.ts";
 import { writeFileAtomic } from "../util/fs.ts";
 import { instanceError } from "./instance.ts";
 import { currentOs, joinNative, type OsKind } from "./paths.ts";
@@ -167,6 +168,7 @@ export async function saveState(
   installerDirectory: string,
   state: InstallerState,
   os: OsKind = currentOs(),
+  durability?: Durability,
 ): Promise<void> {
   const body: InstallerState = {
     formatVersion: STATE_FORMAT_VERSION,
@@ -176,7 +178,9 @@ export async function saveState(
   const path = statePath(installerDirectory, os);
   await assertRealStateFile(path);
   try {
-    await writeFileAtomic(path, `${JSON.stringify(body, null, 2)}\n`);
+    await writeFileAtomic(path, `${JSON.stringify(body, null, 2)}\n`, {
+      ...(durability ? { durability } : {}),
+    });
   } catch (cause) {
     throw new AppError("E_WRITE", `Could not record the install state in ${installerDirectory}`, {
       hint: "The install itself succeeded; re-running it will record the state.",

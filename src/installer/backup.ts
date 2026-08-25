@@ -1,4 +1,5 @@
 import { AppError } from "../errors.ts";
+import { currentDurability, type Durability } from "../util/durable.ts";
 import { basenameOf } from "../util/fs.ts";
 import { sha256Hex } from "../util/hash.ts";
 import { assertPayloadPath } from "./bundle.ts";
@@ -75,6 +76,8 @@ export interface BackupStoreOptions {
   toolVersion: string;
   bundleId: string;
   os?: OsKind;
+  /** How bytes are pushed past the page cache. Injected so faults are testable. */
+  durability?: Durability;
 }
 
 export function backupError(message: string, hint?: string, cause?: unknown): AppError {
@@ -103,12 +106,14 @@ export class BackupStore {
   readonly #os: OsKind;
   readonly #toolVersion: string;
   readonly #bundleId: string;
+  readonly #durability: Durability;
 
   constructor(instanceRoot: string, options: BackupStoreOptions) {
     this.#root = instanceRoot;
     this.#os = options.os ?? currentOs();
     this.#toolVersion = options.toolVersion;
     this.#bundleId = options.bundleId;
+    this.#durability = options.durability ?? currentDurability();
   }
 
   /**
@@ -150,9 +155,35 @@ export class BackupStore {
    * `.mqt-installer`; this cannot.
    */
   async createBackupsDirectory(): Promise<string> {
-    return (await createDirectoryInsideRoot(this.#root, [INSTALLER_DIR, BACKUPS_DIR], {
-      os: this.#os,
-    })).path;
+    const { path, created } = await createDirectoryInsideRoot(
+      this.#root,
+      [INSTALLER_DIR, BACKUPS_DIR],
+      { os: this.#os },
+    );
+    // A directory that only exists in the page cache is a directory the backup
+    // inside it can vanish with. Flush each new level's *parent*, deepest
+    // first, so the whole chain down to `backups/` is on the disk.
+    for (const directory of [...created].reverse()) {
+      await this.#flushDirectory(parentOf(directory, this.#os));
+    }
+    return path;
+  }
+
+  /**
+   * A directory whose new entries have to survive a power cut, because what
+   * comes next is replacing the only other copy of the file just backed up.
+   */
+  async #flushDirectory(path: string): Promise<void> {
+    try {
+      await this.#durability.syncDirectory(path);
+    } catch (cause) {
+      throw backupError(
+        `The backup was written but ${path} could not be flushed to the disk, so the backup ` +
+          `is not guaranteed to survive a power cut. Nothing was changed.`,
+        BACKUP_HINT,
+        cause,
+      );
+    }
   }
 
   /** A backup or sidecar file, proven to be a real file inside `backups/`. */
@@ -307,7 +338,7 @@ export class BackupStore {
       try {
         let written = 0;
         while (written < data.byteLength) written += await file.write(data.subarray(written));
-        await file.sync().catch(() => {});
+        await this.#durability.syncFile(file, backupPath);
       } catch (cause) {
         throw backupError(`Could not write the backup ${backupPath}`, BACKUP_HINT, cause);
       } finally {
@@ -315,7 +346,11 @@ export class BackupStore {
       }
 
       const sidecarPath = await this.resolveBackupFile(`${name}.json`);
-      await writeSidecar(sidecarPath, sidecar);
+      await writeSidecar(sidecarPath, sidecar, this.#durability);
+      // Both files are durable; the entries that name them are not until the
+      // directory holding them is flushed too. Only then may the caller go on
+      // to replace the file this backup is the only remaining copy of.
+      await this.#flushDirectory(directory);
       return {
         name,
         relativePath: `${BACKUPS_DIR}/${name}`,
@@ -353,7 +388,11 @@ const BACKUP_HINT =
  * two leaves an unlabelled `.bak` that is ignored rather than a label with no
  * bytes behind it.
  */
-async function writeSidecar(path: string, sidecar: BackupSidecar): Promise<void> {
+async function writeSidecar(
+  path: string,
+  sidecar: BackupSidecar,
+  durability: Durability,
+): Promise<void> {
   const bytes = new TextEncoder().encode(`${JSON.stringify(sidecar, null, 2)}\n`);
   let file: Deno.FsFile;
   try {
@@ -364,12 +403,19 @@ async function writeSidecar(path: string, sidecar: BackupSidecar): Promise<void>
   try {
     let written = 0;
     while (written < bytes.byteLength) written += await file.write(bytes.subarray(written));
-    await file.sync().catch(() => {});
+    await durability.syncFile(file, path);
   } catch (cause) {
     throw backupError(`Could not write the backup record ${path}`, BACKUP_HINT, cause);
   } finally {
     file.close();
   }
+}
+
+/** The directory a path sits in, in the store's own separator. */
+function parentOf(path: string, os: OsKind): string {
+  const separator = os === "windows" ? "\\" : "/";
+  const index = path.lastIndexOf(separator);
+  return index <= 0 ? path : path.slice(0, index);
 }
 
 function unreadable(message: string, cause?: unknown): AppError {

@@ -1,4 +1,5 @@
 import { AppError } from "../errors.ts";
+import { currentDurability, type Durability } from "../util/durable.ts";
 import { writeFileAtomic } from "../util/fs.ts";
 import { sha256Hex } from "../util/hash.ts";
 import { type BackupKind, type BackupRecord, BackupStore, RESTORABLE_KINDS } from "./backup.ts";
@@ -19,6 +20,12 @@ export interface OperationContext {
   /** Injected rather than read from the clock, so runs are testable. */
   now: () => Date;
   os?: OsKind;
+  /**
+   * How bytes are pushed past the page cache. Injected for the same reason the
+   * clock is: a filesystem that refuses to flush has to be testable without
+   * finding one.
+   */
+  durability?: Durability;
 }
 
 export type InstallStatus =
@@ -100,6 +107,7 @@ interface Session {
   backups: BackupRecord[];
   warnings: string[];
   os: OsKind;
+  durability: Durability;
 }
 
 /**
@@ -112,11 +120,13 @@ async function open(
   bundle: LoadedBundle,
 ): Promise<Session> {
   const os = context.os ?? currentOs();
+  const durability = context.durability ?? currentDurability();
   const instance = await resolveInstanceRoot(context.instanceInput, os);
   const store = new BackupStore(instance.root, {
     toolVersion: bundle.manifest.toolVersion,
     bundleId: bundle.manifest.bundleId,
     os,
+    durability,
   });
   const scan = await store.scan();
   const loaded = await loadState(await store.resolveInstallerDirectory(), os);
@@ -133,6 +143,7 @@ async function open(
     backups: scan.records,
     warnings,
     os,
+    durability,
   };
 }
 
@@ -348,7 +359,9 @@ export async function install(context: OperationContext): Promise<InstallResult>
     }
 
     if (step.status !== "already-installed") {
-      await writeFileAtomic(step.target.path, entry.bytes);
+      await writeFileAtomic(step.target.path, entry.bytes, {
+        durability: session.durability,
+      });
     }
 
     const originalBackup = step.capture === "original" || step.capture === "absent"
@@ -384,6 +397,7 @@ export async function install(context: OperationContext): Promise<InstallResult>
     await session.store.resolveInstallerDirectory(),
     session.state,
     session.os,
+    session.durability,
   );
 
   return {
@@ -551,7 +565,9 @@ export async function uninstall(context: OperationContext): Promise<UninstallRes
         }
       }
     } else {
-      await writeFileAtomic(step.target.path, step.bytes);
+      await writeFileAtomic(step.target.path, step.bytes, {
+        durability: session.durability,
+      });
     }
 
     targets.push({
@@ -575,6 +591,7 @@ export async function uninstall(context: OperationContext): Promise<UninstallRes
     await session.store.resolveInstallerDirectory(),
     session.state,
     session.os,
+    session.durability,
   );
 
   return {

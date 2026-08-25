@@ -38,20 +38,20 @@ per platform, and the launchers are a plain `.cmd` and a POSIX `sh` script.
 
 ### 2.2 Hazards and mitigations
 
-| #  | Hazard                                                                                           | Mitigation                                                                                                                                                                     |
-| -- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1  | Bundle payload declares a traversal path (`../../saves/level.dat`)                               | Payload paths go through `normaliseEntryPath`, then an allowlist: only `config/ftbquests/quests/lang/*.snbt`                                                                   |
-| 2  | Bundle payload tampered with after packaging                                                     | `bundle-manifest.json` carries a SHA-256 per payload file; install verifies every one before touching anything                                                                 |
-| 3  | User drags the wrong folder onto the launcher                                                    | The instance root must contain both `mods/` and `config/` as real directories, or install refuses (`E_INSTANCE`)                                                               |
-| 4  | Target, or a directory on the way to it, is a symlink pointing outside                           | `lstat` on the target and on every path component inside the root; a symlink is refused outright — `--force` does not override                                                 |
-| 4b | `.mqt-installer/`, `backups/`, a backup, a sidecar or `state.json` is a symlink pointing outside | The same component walk, re-run at **every** read and write boundary (§5.6); directories are created a level at a time, never `mkdir --recursive`                              |
-| 5  | Resolved target escapes the instance root anyway                                                 | `realpath(target's parent)` must be a prefix of `realpath(instanceRoot)`; checked after resolution, not before                                                                 |
-| 6  | Install interrupted (power loss, Ctrl+C, closed console)                                         | Every write is temp-in-destination-dir → `sync` → `rename`. Backup inventory is rebuilt from on-disk sidecars, so a half-done run converges on re-run                          |
-| 7  | Repeated install overwrites the real backup with the Japanese file                               | A file whose SHA-256 matches **any** known payload digest is never captured as an original backup (§5.3). This is the single load-bearing rule                                 |
-| 8  | Backup deleted, truncated or corrupted, then uninstall runs                                      | Every backup is verified against its sidecar hash and size before use; a failure is an actionable error and **nothing is written** (`E_BACKUP`)                                |
-| 9  | Uninstall clobbers edits the user made after installing                                          | The installed file's hash must still match what was installed, else `E_TARGET_MODIFIED`. `--force` proceeds but backs the modified file up first                               |
-| 10 | We redistribute ACA's English prose                                                              | The packager copies payload bytes only from the translated overlay ZIP; `bundle-manifest.json` records `containsSourceProse: false`; backups exist only on the user's own disk |
-| 11 | The installer executable does something other than install                                       | Compiled with `--allow-read --allow-write` only. No `--allow-net`, no `--allow-run`, no `--allow-env`, no `-A`. It structurally cannot phone home or spawn anything            |
+| #  | Hazard                                                                                           | Mitigation                                                                                                                                                                                                                                             |
+| -- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1  | Bundle payload declares a traversal path (`../../saves/level.dat`)                               | Payload paths go through `normaliseEntryPath`, then an allowlist: only `config/ftbquests/quests/lang/*.snbt`                                                                                                                                           |
+| 2  | Bundle payload tampered with after packaging                                                     | `bundle-manifest.json` carries a SHA-256 per payload file; install verifies every one before touching anything                                                                                                                                         |
+| 3  | User drags the wrong folder onto the launcher                                                    | The instance root must contain both `mods/` and `config/` as real directories, or install refuses (`E_INSTANCE`)                                                                                                                                       |
+| 4  | Target, or a directory on the way to it, is a symlink pointing outside                           | `lstat` on the target and on every path component inside the root; a symlink is refused outright — `--force` does not override                                                                                                                         |
+| 4b | `.mqt-installer/`, `backups/`, a backup, a sidecar or `state.json` is a symlink pointing outside | The same component walk, re-run at **every** read and write boundary (§5.6); directories are created a level at a time, never `mkdir --recursive`                                                                                                      |
+| 5  | Resolved target escapes the instance root anyway                                                 | `realpath(target's parent)` must be a prefix of `realpath(instanceRoot)`; checked after resolution, not before                                                                                                                                         |
+| 6  | Install interrupted (power loss, Ctrl+C, closed console)                                         | Every write is temp-in-destination-dir → `fsync` → `rename` → `fsync` the directory, and a flush that fails **aborts before the target is replaced** (§6.1). Backup inventory is rebuilt from on-disk sidecars, so a half-done run converges on re-run |
+| 7  | Repeated install overwrites the real backup with the Japanese file                               | A file whose SHA-256 matches **any** known payload digest is never captured as an original backup (§5.3). This is the single load-bearing rule                                                                                                         |
+| 8  | Backup deleted, truncated or corrupted, then uninstall runs                                      | Every backup is verified against its sidecar hash and size before use; a failure is an actionable error and **nothing is written** (`E_BACKUP`)                                                                                                        |
+| 9  | Uninstall clobbers edits the user made after installing                                          | The installed file's hash must still match what was installed, else `E_TARGET_MODIFIED`. `--force` proceeds but backs the modified file up first                                                                                                       |
+| 10 | We redistribute ACA's English prose                                                              | The packager copies payload bytes only from the translated overlay ZIP; `bundle-manifest.json` records `containsSourceProse: false`; backups exist only on the user's own disk                                                                         |
+| 11 | The installer executable does something other than install                                       | Compiled with `--allow-read --allow-write` only. No `--allow-net`, no `--allow-run`, no `--allow-env`, no `-A`. It structurally cannot phone home or spawn anything                                                                                    |
 
 ### 2.3 Explicit non-goals
 
@@ -414,14 +414,42 @@ uninstall is classified **foreign** — first contact — and its file becomes t
 
 Write order, chosen for crash safety:
 
-1. Capture the backup file with `createNew`, `sync`, then write its sidecar with `sync`.
-2. Write the payload atomically (temp in the same directory → `sync` → `rename`).
-3. Rewrite `state.json` atomically.
+1. Capture the backup file with `createNew` and `fsync` it, write its sidecar and `fsync` that, then
+   `fsync` `backups/` — and every parent directory this run had to create — so the _entries naming
+   those files_ are on the disk too, not only their contents.
+2. Write the payload atomically (temp in the same directory → `fsync` → `rename` → `fsync` the
+   directory).
+3. Rewrite `state.json` atomically, the same way.
 
 Crash between 1 and 2 leaves an orphan backup; the next install classifies the target as **foreign**
 again, finds the identical backup by hash, reuses it, and proceeds. Crash between 2 and 3 leaves an
 unrecorded install; the next uninstall rebuilds the inventory from sidecars, finds the `original`
 backup for that target, and restores correctly.
+
+### 6.1 A flush that fails stops the run
+
+Every one of those flushes is checked. A failure aborts **before** step 2, with `E_BACKUP` and
+"nothing was changed" — because the alternative is the one outcome this whole design exists to
+prevent: a power cut that takes the backup with it and leaves the instance holding the translated
+file and no copy of the pack's own prose. A file's contents reaching the page cache is not the same
+as reaching the disk, and neither says anything about the directory entry that names it.
+
+The flushes are injected rather than called directly, so a filesystem that refuses one is testable
+without finding one, and so the two platforms differ in one visible place instead of by implication:
+
+| Platform | File contents        | Directory entry                                         |
+| -------- | -------------------- | ------------------------------------------------------- |
+| Linux    | `fsync(fd)`, checked | `fsync` on a read-only handle to the directory, checked |
+| Windows  | `fsync(fd)`, checked | **A deliberate no-op** — see below                      |
+
+Windows has no per-directory flush to call: opening a directory as a file fails outright, and the
+nearest equivalent, `FlushFileBuffers` on a volume handle, needs administrator rights this installer
+never asks for. NTFS journals directory metadata, so a rename that has returned is recoverable by
+the filesystem itself. That is a documented no-op, not a swallowed failure.
+
+So the claim is: on Linux, the backup **and the entry naming it** are both on the disk before the
+original is replaced. On Windows it is the backup's _contents_ plus a rename that has returned, with
+NTFS's own journalling behind it. No more than that is claimed.
 
 **Instance-root convenience:** if the given directory has no `mods/`+`config/` but its child
 `.minecraft/` or `minecraft/` does, that child is used and the resolution is printed. This covers
