@@ -3,10 +3,10 @@ import { AppError } from "../src/errors.ts";
 import { translateUnits } from "../src/translate/orchestrator.ts";
 import { TranslationCache } from "../src/translate/cache.ts";
 import {
-  FatalProviderError,
-  TransientProviderError,
   type BatchRequest,
   type BatchResponse,
+  FatalProviderError,
+  TransientProviderError,
   type TranslateOptions,
   type TranslationProvider,
 } from "../src/translate/types.ts";
@@ -218,7 +218,10 @@ Deno.test("a batch that fails validation falls back to the stronger model", asyn
 Deno.test("the repaired retry carries a note explaining what failed", async () => {
   await withCache(async (cache) => {
     const provider = new FakeProvider((request, options) => ({
-      items: request.items.map((i) => ({ id: i.id, text: options.model === "sonnet" ? "&6ok&r" : "bad" })),
+      items: request.items.map((i) => ({
+        id: i.id,
+        text: options.model === "sonnet" ? "&6ok&r" : "bad",
+      })),
       model: options.model,
     }));
     const list = units(["&6Go to the mine&r"]);
@@ -309,7 +312,10 @@ Deno.test("identical source strings are translated once and reused", async () =>
     const result = await translateUnits(list, { ...BASE, provider, cache, batchSize: 10 });
     const sent = provider.calls.flatMap((c) => c.request.items.map((i) => i.text));
     assertEquals(sent.filter((t) => t === "Repeated source string").length, 1);
-    assertEquals(result.translations.get("quest.0.title"), result.translations.get("quest.1.title"));
+    assertEquals(
+      result.translations.get("quest.0.title"),
+      result.translations.get("quest.1.title"),
+    );
   });
 });
 

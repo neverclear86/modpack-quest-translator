@@ -52,7 +52,7 @@ class Parser {
         this.#pos++;
         break;
       }
-      if (ch === "," ) {
+      if (ch === ",") {
         this.#pos++;
         continue;
       }
@@ -141,7 +141,9 @@ class Parser {
     for (;;) {
       if (this.#pos >= this.#text.length) this.#fail("unterminated string");
       const ch = this.#text[this.#pos];
-      if (ch === "\n") this.#fail("unterminated string: a newline appeared before the closing quote");
+      if (ch === "\n") {
+        this.#fail("unterminated string: a newline appeared before the closing quote");
+      }
       if (ch === quote) {
         this.#pos++;
         return out;
@@ -152,15 +154,33 @@ class Parser {
         const esc = this.#text[this.#pos];
         this.#pos++;
         switch (esc) {
-          case "n": out += "\n"; break;
-          case "t": out += "\t"; break;
-          case "r": out += "\r"; break;
-          case "b": out += "\b"; break;
-          case "f": out += "\f"; break;
-          case "/": out += "/"; break;
-          case '"': out += '"'; break;
-          case "'": out += "'"; break;
-          case "\\": out += "\\"; break;
+          case "n":
+            out += "\n";
+            break;
+          case "t":
+            out += "\t";
+            break;
+          case "r":
+            out += "\r";
+            break;
+          case "b":
+            out += "\b";
+            break;
+          case "f":
+            out += "\f";
+            break;
+          case "/":
+            out += "/";
+            break;
+          case '"':
+            out += '"';
+            break;
+          case "'":
+            out += "'";
+            break;
+          case "\\":
+            out += "\\";
+            break;
           case "u": {
             const hex = this.#text.slice(this.#pos, this.#pos + 4);
             if (!/^[0-9a-fA-F]{4}$/.test(hex)) this.#fail("malformed \\u escape");
@@ -183,10 +203,14 @@ class Parser {
     const start = this.#pos;
     while (this.#pos < this.#text.length && BARE_CHAR.test(this.#text[this.#pos])) this.#pos++;
     const raw = this.#text.slice(start, this.#pos);
-    if (raw.length === 0) this.#fail(`unexpected character ${JSON.stringify(this.#text[this.#pos])}`);
+    if (raw.length === 0) {
+      this.#fail(`unexpected character ${JSON.stringify(this.#text[this.#pos])}`);
+    }
     if (raw === "true") return { type: "boolean", value: true };
     if (raw === "false") return { type: "boolean", value: false };
-    if (/^[+-]?(\d+\.?\d*|\.\d+)([bslfdBSLFD])?$/.test(raw)) return { type: "number", literal: raw };
+    if (/^[+-]?(\d+\.?\d*|\.\d+)([bslfdBSLFD])?$/.test(raw)) {
+      return { type: "number", literal: raw };
+    }
     // An unquoted token that is neither a number nor a boolean is still a
     // string in SNBT.
     return { type: "string", value: raw };
@@ -221,7 +245,9 @@ class Parser {
 
   #expect(ch: string): void {
     if (this.#text[this.#pos] !== ch) {
-      this.#fail(`expected ${JSON.stringify(ch)} but found ${JSON.stringify(this.#peek() ?? "<eof>")}`);
+      this.#fail(
+        `expected ${JSON.stringify(ch)} but found ${JSON.stringify(this.#peek() ?? "<eof>")}`,
+      );
     }
     this.#pos++;
   }
@@ -245,10 +271,14 @@ class Parser {
   #fail(message: string): never {
     const line = this.#lineOf(this.#pos);
     const column = this.#columnOf(this.#pos);
-    throw new AppError("E_VALIDATION", `SNBT parse error at line ${line}, column ${column}: ${message}`, {
-      details: { line, column },
-      hint: "The quest file may use a format this version does not support.",
-    });
+    throw new AppError(
+      "E_VALIDATION",
+      `SNBT parse error at line ${line}, column ${column}: ${message}`,
+      {
+        details: { line, column },
+        hint: "The quest file may use a format this version does not support.",
+      },
+    );
   }
 }
 

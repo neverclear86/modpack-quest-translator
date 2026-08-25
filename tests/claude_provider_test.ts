@@ -11,7 +11,12 @@ const REQUEST: BatchRequest = {
   glossary: { Create: "Create" },
   items: [
     { id: "quest.A.title", kind: "title", text: "Cogwheel", protectedTokens: [] },
-    { id: "quest.B.quest_desc#0", kind: "quest_desc", text: "&6Go&r", protectedTokens: ["&6", "&r"] },
+    {
+      id: "quest.B.quest_desc#0",
+      kind: "quest_desc",
+      text: "&6Go&r",
+      protectedTokens: ["&6", "&r"],
+    },
   ],
 };
 
@@ -34,7 +39,8 @@ function resultJson(extra: Record<string, unknown> = {}): string {
   });
 }
 
-const HELP_WITHOUT_MAX_TURNS = "Usage: claude [options]\n  --tools <tools...>\n  --json-schema <schema>\n";
+const HELP_WITHOUT_MAX_TURNS =
+  "Usage: claude [options]\n  --tools <tools...>\n  --json-schema <schema>\n";
 const HELP_WITH_MAX_TURNS = HELP_WITHOUT_MAX_TURNS + "  --max-turns <n>  Bound the turns\n";
 
 Deno.test("a batch is translated through a schema-validated structured result", async () => {
@@ -83,7 +89,10 @@ Deno.test("the mandated safety flags are always passed", async () => {
   const runner = new ScriptedRunner()
     .on(["--help"], { stdout: HELP_WITHOUT_MAX_TURNS })
     .on(["-p"], { stdout: resultJson() });
-  await new ClaudeCodeProvider({ runner }).translateBatch(REQUEST, { model: "haiku", effort: "low" });
+  await new ClaudeCodeProvider({ runner }).translateBatch(REQUEST, {
+    model: "haiku",
+    effort: "low",
+  });
   const args = runner.calls.find((c) => c.args.includes("-p"))!.args;
 
   assertEquals(args.includes("-p"), true);
@@ -117,7 +126,10 @@ Deno.test("--max-turns is passed only when the installed CLI advertises it", asy
     .on(["--help"], { stdout: HELP_WITHOUT_MAX_TURNS })
     .on(["-p"], { stdout: resultJson() });
   await new ClaudeCodeProvider({ runner: without }).translateBatch(REQUEST, { model: "haiku" });
-  assertEquals(without.calls.find((c) => c.args.includes("-p"))!.args.includes("--max-turns"), false);
+  assertEquals(
+    without.calls.find((c) => c.args.includes("-p"))!.args.includes("--max-turns"),
+    false,
+  );
 
   const with_ = new ScriptedRunner()
     .on(["--help"], { stdout: HELP_WITH_MAX_TURNS })
@@ -184,15 +196,19 @@ Deno.test("a non-JSON stdout is a transient failure, not a crash", async () => {
 });
 
 Deno.test("rate limits and overload are classified as transient", async () => {
-  for (const message of [
-    "Error: rate limit exceeded",
-    "API Error: 529 overloaded_error",
-    "Error: 500 Internal Server Error",
-    "request timed out",
-  ]) {
+  for (
+    const message of [
+      "Error: rate limit exceeded",
+      "API Error: 529 overloaded_error",
+      "Error: 500 Internal Server Error",
+      "request timed out",
+    ]
+  ) {
     const runner = new ScriptedRunner()
       .on(["--help"], { stdout: HELP_WITHOUT_MAX_TURNS })
-      .on(["-p"], { stdout: JSON.stringify({ is_error: true, subtype: "error", result: message }) });
+      .on(["-p"], {
+        stdout: JSON.stringify({ is_error: true, subtype: "error", result: message }),
+      });
     await assertRejects(
       () => new ClaudeCodeProvider({ runner }).translateBatch(REQUEST, { model: "haiku" }),
       TransientProviderError,
@@ -206,7 +222,9 @@ Deno.test("being logged out or asking for an unknown model is fatal, not retried
   for (const message of ["Invalid API key. Please run /login", "Unknown model: haiku-9"]) {
     const runner = new ScriptedRunner()
       .on(["--help"], { stdout: HELP_WITHOUT_MAX_TURNS })
-      .on(["-p"], { stdout: JSON.stringify({ is_error: true, subtype: "error", result: message }) });
+      .on(["-p"], {
+        stdout: JSON.stringify({ is_error: true, subtype: "error", result: message }),
+      });
     await assertRejects(
       () => new ClaudeCodeProvider({ runner }).translateBatch(REQUEST, { model: "haiku" }),
       FatalProviderError,
@@ -265,7 +283,9 @@ Deno.test("preflight fails actionably when logged out", async () => {
 Deno.test("preflight never runs claude update", async () => {
   const runner = new ScriptedRunner()
     .on(["--version"], { stdout: "2.1.241\n" })
-    .on(["auth", "status"], { stdout: JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }) });
+    .on(["auth", "status"], {
+      stdout: JSON.stringify({ loggedIn: true, authMethod: "claude.ai" }),
+    });
   await new ClaudeCodeProvider({ runner }).preflight();
   assertEquals(runner.calls.some((c) => c.args.includes("update")), false);
 });
@@ -299,7 +319,10 @@ Deno.test("--max-budget-usd is passed only when a cost cap is configured", async
     .on(["--help"], { stdout: HELP_WITHOUT_MAX_TURNS })
     .on(["-p"], { stdout: resultJson() });
   await new ClaudeCodeProvider({ runner: plain }).translateBatch(REQUEST, { model: "haiku" });
-  assertEquals(plain.calls.find((c) => c.args.includes("-p"))!.args.includes("--max-budget-usd"), false);
+  assertEquals(
+    plain.calls.find((c) => c.args.includes("-p"))!.args.includes("--max-budget-usd"),
+    false,
+  );
 
   const capped = new ScriptedRunner()
     .on(["--help"], { stdout: HELP_WITHOUT_MAX_TURNS })

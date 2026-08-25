@@ -1,10 +1,6 @@
 import { parseSnbt } from "../quests/snbt/mod.ts";
 import type { SnbtValue } from "../quests/snbt/mod.ts";
-import {
-  countEscapedAmpersands,
-  findFormattingCodes,
-  findPlaceholders,
-} from "../quests/tokens.ts";
+import { countEscapedAmpersands, findFormattingCodes, findPlaceholders } from "../quests/tokens.ts";
 import type { TranslationUnit } from "../quests/adapter.ts";
 
 export type ProblemKind =
@@ -42,7 +38,10 @@ export interface UnitValidationOptions {
  */
 const UNCHANGED_MIN_LENGTH = 12;
 
-function multisetDiff(a: readonly string[], b: readonly string[]): { missing: string[]; extra: string[] } {
+function multisetDiff(
+  a: readonly string[],
+  b: readonly string[],
+): { missing: string[]; extra: string[] } {
   const counts = new Map<string, number>();
   for (const token of a) counts.set(token, (counts.get(token) ?? 0) + 1);
   for (const token of b) counts.set(token, (counts.get(token) ?? 0) - 1);
@@ -73,11 +72,15 @@ export function validateUnit(
   options: UnitValidationOptions = {},
 ): ValidationResult {
   const problems: Problem[] = [];
-  const push = (kind: ProblemKind, message: string) => problems.push({ kind, message, id: unit.id });
+  const push = (kind: ProblemKind, message: string) =>
+    problems.push({ kind, message, id: unit.id });
 
   if (unit.text.trim().length === 0) {
     if (translation !== unit.text) {
-      push("empty-source-changed", `Empty source must stay empty, got ${JSON.stringify(translation)}`);
+      push(
+        "empty-source-changed",
+        `Empty source must stay empty, got ${JSON.stringify(translation)}`,
+      );
     }
     return { ok: problems.length === 0, problems };
   }
@@ -119,7 +122,10 @@ export function validateUnit(
 
   for (const [term, required] of Object.entries(options.glossary ?? {})) {
     if (unit.text.includes(term) && !translation.includes(required)) {
-      push("glossary", `Glossary term ${JSON.stringify(term)} must appear as ${JSON.stringify(required)}`);
+      push(
+        "glossary",
+        `Glossary term ${JSON.stringify(term)} must appear as ${JSON.stringify(required)}`,
+      );
     }
   }
 
@@ -213,7 +219,9 @@ export function validateDocument(source: string, output: string): ValidationResu
       });
       continue;
     }
-    if (value.type === "array" && other.type === "array" && value.items.length !== other.items.length) {
+    if (
+      value.type === "array" && other.type === "array" && value.items.length !== other.items.length
+    ) {
       problems.push({
         kind: "array-length",
         message: `Key ${key} changed from ${value.items.length} to ${other.items.length} elements`,

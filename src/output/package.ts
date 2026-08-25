@@ -52,6 +52,7 @@ export function buildManifest(meta: OverlayMeta, redactor: Redactor): string {
     model: meta.model,
     fallbackModel: meta.fallbackModel,
     keyCounts: meta.keyCounts ?? {},
+    sourceKeyDigests: meta.sourceKeyDigests ?? {},
     updateDiff: meta.updateDiff,
   };
   return `${JSON.stringify(redactor.value(manifest), null, 2)}\n`;

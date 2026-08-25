@@ -7,7 +7,8 @@ function roundTrip(text: string): string {
 }
 
 Deno.test("parses the FTB Quests lang dialect: unquoted dotted keys, newline separators", () => {
-  const src = '{\n\tchapter.032B1396E6C49A89.title: "Create: Core"\n\tquest.0000000000000002.title: "Cogwheel"\n}\n';
+  const src =
+    '{\n\tchapter.032B1396E6C49A89.title: "Create: Core"\n\tquest.0000000000000002.title: "Cogwheel"\n}\n';
   const root = parseSnbt(src);
   assertEquals(root.type, "compound");
   assertEquals(root.members.map((m) => m.key), [
@@ -23,7 +24,8 @@ Deno.test("round-trips a single-line array exactly", () => {
 });
 
 Deno.test("round-trips a multi-line array exactly", () => {
-  const src = '{\n\tquest.A.quest_desc: [\n\t\t"Line one."\n\t\t""\n\t\t"Line &6three&r."\n\t]\n}\n';
+  const src =
+    '{\n\tquest.A.quest_desc: [\n\t\t"Line one."\n\t\t""\n\t\t"Line &6three&r."\n\t]\n}\n';
   assertEquals(roundTrip(src), src);
 });
 
@@ -35,7 +37,8 @@ Deno.test("preserves the literal backslash-ampersand escape FTB writes", () => {
 });
 
 Deno.test("preserves formatting codes, image placeholders and unicode", () => {
-  const src = '{\n\ta.b.quest_desc: [\n\t\t"The &bCobblemon&r chapter"\n\t\t"{image:mod:item/x width:100 height:100 align:center}"\n\t\t"Pokémon を捕まえる"\n\t]\n}\n';
+  const src =
+    '{\n\ta.b.quest_desc: [\n\t\t"The &bCobblemon&r chapter"\n\t\t"{image:mod:item/x width:100 height:100 align:center}"\n\t\t"Pokémon を捕まえる"\n\t]\n}\n';
   assertEquals(roundTrip(src), src);
 });
 
@@ -140,7 +143,8 @@ Deno.test("CRLF input is accepted", () => {
 Deno.test("CRLF line endings survive a round trip", () => {
   // Real FTB Quests lang files ship with CRLF; rewriting them as LF would make
   // every line of the file a spurious diff against the pack's own output.
-  const src = '{\r\n\tchapter.A.title: "Create: Core"\r\n\tquest.B.quest_desc: [\r\n\t\t"one"\r\n\t\t"two"\r\n\t]\r\n}\r\n';
+  const src =
+    '{\r\n\tchapter.A.title: "Create: Core"\r\n\tquest.B.quest_desc: [\r\n\t\t"one"\r\n\t\t"two"\r\n\t]\r\n}\r\n';
   assertEquals(roundTrip(src), src);
 });
 

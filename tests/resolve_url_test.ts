@@ -3,7 +3,9 @@ import { AppError } from "../src/errors.ts";
 import { classifyPackUrl } from "../src/resolve/url.ts";
 
 Deno.test("curseforge modpack project urls", () => {
-  const r = classifyPackUrl("https://www.curseforge.com/minecraft/modpacks/all-of-create-aeronautics");
+  const r = classifyPackUrl(
+    "https://www.curseforge.com/minecraft/modpacks/all-of-create-aeronautics",
+  );
   assertEquals(r.kind, "curseforge");
   assertEquals(r.slug, "all-of-create-aeronautics");
   assertEquals(r.fileId, undefined);
@@ -21,7 +23,9 @@ Deno.test("curseforge file and download urls pin an exact release", () => {
   assertEquals(files.fileId, 6543210);
   const dl = classifyPackUrl("https://www.curseforge.com/minecraft/modpacks/aca/download/6543210");
   assertEquals(dl.fileId, 6543210);
-  const query = classifyPackUrl("https://www.curseforge.com/minecraft/modpacks/aca/files/all?fileId=999");
+  const query = classifyPackUrl(
+    "https://www.curseforge.com/minecraft/modpacks/aca/files/all?fileId=999",
+  );
   assertEquals(query.fileId, 999);
 });
 
@@ -31,7 +35,10 @@ Deno.test("curseforge non-modpack projects are rejected", () => {
     AppError,
   ) as AppError;
   assertEquals(err.code, "E_UNSUPPORTED_PACK");
-  assertThrows(() => classifyPackUrl("https://www.curseforge.com/minecraft/texture-packs/x"), AppError);
+  assertThrows(
+    () => classifyPackUrl("https://www.curseforge.com/minecraft/texture-packs/x"),
+    AppError,
+  );
 });
 
 Deno.test("modrinth modpack project urls", () => {
@@ -49,7 +56,10 @@ Deno.test("modrinth version urls pin an exact release", () => {
 });
 
 Deno.test("modrinth non-modpack projects are rejected", () => {
-  const err = assertThrows(() => classifyPackUrl("https://modrinth.com/mod/sodium"), AppError) as AppError;
+  const err = assertThrows(
+    () => classifyPackUrl("https://modrinth.com/mod/sodium"),
+    AppError,
+  ) as AppError;
   assertEquals(err.code, "E_UNSUPPORTED_PACK");
   assertThrows(() => classifyPackUrl("https://modrinth.com/resourcepack/x"), AppError);
 });
@@ -65,7 +75,9 @@ Deno.test("direct archive urls are accepted", () => {
 });
 
 Deno.test("non-http schemes are rejected", () => {
-  for (const bad of ["file:///etc/passwd", "ftp://x/y.zip", "javascript:alert(1)", "data:text/plain,x"]) {
+  for (
+    const bad of ["file:///etc/passwd", "ftp://x/y.zip", "javascript:alert(1)", "data:text/plain,x"]
+  ) {
     const err = assertThrows(() => classifyPackUrl(bad), AppError) as AppError;
     assertEquals(err.code, "E_INVALID_INPUT");
   }

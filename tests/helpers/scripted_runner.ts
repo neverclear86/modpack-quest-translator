@@ -1,9 +1,9 @@
 import {
   CommandNotFoundError,
-  CommandTimeoutError,
   type CommandOptions,
   type CommandResult,
   type CommandRunner,
+  CommandTimeoutError,
 } from "../../src/util/command.ts";
 
 export interface RecordedCall {

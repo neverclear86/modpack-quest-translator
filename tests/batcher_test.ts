@@ -2,7 +2,10 @@ import { assertEquals } from "@std/assert";
 import { buildBatches } from "../src/translate/batcher.ts";
 import type { TranslationUnit } from "../src/quests/adapter.ts";
 
-function units(count: number, over: (i: number) => Partial<TranslationUnit> = () => ({})): TranslationUnit[] {
+function units(
+  count: number,
+  over: (i: number) => Partial<TranslationUnit> = () => ({}),
+): TranslationUnit[] {
   return Array.from({ length: count }, (_, i) => ({
     id: `quest.${i}.title`,
     key: `quest.${i}.title`,
@@ -44,7 +47,10 @@ Deno.test("batches never mix chapters", () => {
 Deno.test("a unit larger than the character budget becomes its own long-prose batch", () => {
   const list = [
     ...units(2),
-    ...units(1, () => ({ id: "quest.big.quest_desc", key: "quest.big.quest_desc", text: "y".repeat(5000) })),
+    ...units(
+      1,
+      () => ({ id: "quest.big.quest_desc", key: "quest.big.quest_desc", text: "y".repeat(5000) }),
+    ),
     ...units(2, (i) => ({ id: `quest.tail${i}.title`, key: `quest.tail${i}.title` })),
   ];
   const batches = buildBatches(list, { maxItems: 10, maxChars: 500 });
@@ -66,5 +72,9 @@ Deno.test("each batch has a stable index and id", () => {
 
 Deno.test("units keep their order inside a batch", () => {
   const batches = buildBatches(units(3), { maxItems: 10, maxChars: 10_000 });
-  assertEquals(batches[0].units.map((u) => u.id), ["quest.0.title", "quest.1.title", "quest.2.title"]);
+  assertEquals(batches[0].units.map((u) => u.id), [
+    "quest.0.title",
+    "quest.1.title",
+    "quest.2.title",
+  ]);
 });

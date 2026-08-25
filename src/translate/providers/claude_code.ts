@@ -1,15 +1,15 @@
 import {
   CommandNotFoundError,
+  type CommandRunner,
   CommandTimeoutError,
   DenoCommandRunner,
-  type CommandRunner,
 } from "../../util/command.ts";
 import {
-  FatalProviderError,
-  TransientProviderError,
   type BatchRequest,
   type BatchResponse,
+  FatalProviderError,
   type PreflightReport,
+  TransientProviderError,
   type TranslateOptions,
   type TranslationProvider,
 } from "../types.ts";

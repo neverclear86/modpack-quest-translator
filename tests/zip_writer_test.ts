@@ -79,7 +79,11 @@ Deno.test("unsafe output paths are refused", async () => {
 
 Deno.test("duplicate paths are refused", async () => {
   await assertRejects(
-    () => writeZip([{ path: "a.txt", data: enc.encode("1") }, { path: "a.txt", data: enc.encode("2") }]),
+    () =>
+      writeZip([{ path: "a.txt", data: enc.encode("1") }, {
+        path: "a.txt",
+        data: enc.encode("2"),
+      }]),
     AppError,
   );
 });

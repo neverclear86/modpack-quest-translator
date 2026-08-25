@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { TranslationCache, glossaryVersion } from "../src/translate/cache.ts";
+import { glossaryVersion, TranslationCache } from "../src/translate/cache.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "mqt-cache-" });
@@ -34,13 +34,15 @@ Deno.test("changing any key field misses the cache", async () => {
     cache.set("Hello", "haiku", "こんにちは");
     await cache.flush();
 
-    for (const override of [
-      { targetLocale: "ko_kr" },
-      { sourceLocale: "de_de" },
-      { provider: "echo" },
-      { promptVersion: 4 },
-      { glossaryVersion: "abc123" },
-    ]) {
+    for (
+      const override of [
+        { targetLocale: "ko_kr" },
+        { sourceLocale: "de_de" },
+        { provider: "echo" },
+        { promptVersion: 4 },
+        { glossaryVersion: "abc123" },
+      ]
+    ) {
       const other = await TranslationCache.open(dir, { ...KEY, ...override });
       assertEquals(other.get("Hello", "haiku"), undefined, JSON.stringify(override));
     }

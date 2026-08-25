@@ -24,6 +24,8 @@ export interface OverlayMeta {
   /** Path of the source lang file inside the pack archive. */
   sourcePath: string;
   keyCounts?: KeyCounts;
+  /** Per-key digest of the source values, so a later run can diff against it. */
+  sourceKeyDigests?: Record<string, string>;
   /** Diff against a previous run, when --previous was supplied. */
   updateDiff?: UpdateDiff;
 }

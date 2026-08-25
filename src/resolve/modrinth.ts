@@ -100,9 +100,13 @@ function pickLatest(
   allowPrerelease: boolean,
 ): ModrinthVersion {
   if (!Array.isArray(versions) || versions.length === 0) {
-    throw new AppError("E_UNSUPPORTED_PACK", `Modrinth project "${slug}" has no published versions`, {
-      hint: "There is nothing to download yet.",
-    });
+    throw new AppError(
+      "E_UNSUPPORTED_PACK",
+      `Modrinth project "${slug}" has no published versions`,
+      {
+        hint: "There is nothing to download yet.",
+      },
+    );
   }
   const byDate = [...versions].sort((a, b) =>
     (b.date_published ?? "").localeCompare(a.date_published ?? "")
@@ -127,7 +131,9 @@ function pickFile(version: ModrinthVersion, slug: string): ModrinthFile {
   if (!candidate?.url) {
     throw new AppError(
       "E_UNSUPPORTED_PACK",
-      `Modrinth version "${version.version_number ?? version.id}" of "${slug}" has no downloadable file`,
+      `Modrinth version "${
+        version.version_number ?? version.id
+      }" of "${slug}" has no downloadable file`,
     );
   }
   return candidate;

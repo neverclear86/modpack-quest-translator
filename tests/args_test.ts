@@ -41,8 +41,14 @@ Deno.test("--url and --archive are mutually exclusive and one is required", () =
 });
 
 Deno.test("--target and --output are required", () => {
-  assertThrows(() => parseArgs(["--url", "https://modrinth.com/modpack/x", "--output", "./o"]), AppError);
-  assertThrows(() => parseArgs(["--url", "https://modrinth.com/modpack/x", "--target", "ja"]), AppError);
+  assertThrows(
+    () => parseArgs(["--url", "https://modrinth.com/modpack/x", "--output", "./o"]),
+    AppError,
+  );
+  assertThrows(
+    () => parseArgs(["--url", "https://modrinth.com/modpack/x", "--target", "ja"]),
+    AppError,
+  );
 });
 
 Deno.test("an unknown flag is a usage error rather than silently ignored", () => {
@@ -109,7 +115,13 @@ Deno.test("--layout is validated", () => {
 
 Deno.test("boolean switches parse", () => {
   const options = parseArgs([
-    ...MIN, "--dry-run", "--emit-raw", "--force", "--json", "--no-cache", "--allow-prerelease",
+    ...MIN,
+    "--dry-run",
+    "--emit-raw",
+    "--force",
+    "--json",
+    "--no-cache",
+    "--allow-prerelease",
   ]);
   assertEquals(options.dryRun, true);
   assertEquals(options.emitRaw, true);
@@ -138,7 +150,10 @@ Deno.test("--help and --version short circuit", () => {
 });
 
 Deno.test("the curseforge api key comes from a flag or the environment", () => {
-  assertEquals(parseArgs([...MIN, "--curseforge-api-key", "$2a$10$k"]).curseForgeApiKey, "$2a$10$k");
+  assertEquals(
+    parseArgs([...MIN, "--curseforge-api-key", "$2a$10$k"]).curseForgeApiKey,
+    "$2a$10$k",
+  );
   assertEquals(
     parseArgs(MIN, { CURSEFORGE_API_KEY: "$2a$10$envkey" }).curseForgeApiKey,
     "$2a$10$envkey",
@@ -157,7 +172,10 @@ Deno.test("--glossary accepts inline pairs and repeats", () => {
 });
 
 Deno.test("an equals-form flag value is accepted", () => {
-  assertEquals(parseArgs(["--url=https://modrinth.com/modpack/x", "--target=ja", "--output=./o"]).output, "./o");
+  assertEquals(
+    parseArgs(["--url=https://modrinth.com/modpack/x", "--target=ja", "--output=./o"]).output,
+    "./o",
+  );
 });
 
 Deno.test("a bare -- stops flag parsing", () => {
@@ -167,7 +185,15 @@ Deno.test("a bare -- stops flag parsing", () => {
 
 Deno.test("target resolution happens during parsing so errors surface early", () => {
   const err = assertThrows(
-    () => parseArgs(["--url", "https://modrinth.com/modpack/x", "--target", "Klingon", "--output", "./o"]),
+    () =>
+      parseArgs([
+        "--url",
+        "https://modrinth.com/modpack/x",
+        "--target",
+        "Klingon",
+        "--output",
+        "./o",
+      ]),
     AppError,
   ) as AppError;
   assertEquals(err.code, "E_INVALID_INPUT");

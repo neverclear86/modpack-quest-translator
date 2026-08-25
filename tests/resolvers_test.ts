@@ -37,8 +37,18 @@ const MODRINTH_VERSIONS = [
     loaders: ["neoforge"],
     date_published: "2026-06-06T16:56:03.830029Z",
     files: [
-      { filename: "server.mrpack", size: 5, url: "https://cdn.modrinth.com/s.mrpack", primary: false },
-      { filename: "Rubius 0.9.mrpack", size: 9, url: "https://cdn.modrinth.com/a.mrpack", primary: true },
+      {
+        filename: "server.mrpack",
+        size: 5,
+        url: "https://cdn.modrinth.com/s.mrpack",
+        primary: false,
+      },
+      {
+        filename: "Rubius 0.9.mrpack",
+        size: 9,
+        url: "https://cdn.modrinth.com/a.mrpack",
+        primary: true,
+      },
     ],
   },
   {
@@ -48,7 +58,12 @@ const MODRINTH_VERSIONS = [
     game_versions: ["1.21.1"],
     loaders: ["neoforge"],
     date_published: "2026-07-01T00:00:00Z",
-    files: [{ filename: "beta.mrpack", size: 9, url: "https://cdn.modrinth.com/b.mrpack", primary: true }],
+    files: [{
+      filename: "beta.mrpack",
+      size: 9,
+      url: "https://cdn.modrinth.com/b.mrpack",
+      primary: true,
+    }],
   },
 ];
 
@@ -181,7 +196,8 @@ function cfRoutes(): Record<string, () => Response> {
     "https://api.curseforge.com/v1/mods/search?gameId=432&classId=4471&slug=all-of-create-aeronautics":
       () => json(CF_MOD),
     "https://api.curseforge.com/v1/mods/900001/files?pageSize=50": () => json(CF_FILES),
-    "https://api.curseforge.com/v1/mods/900001/files/6000001": () => json({ data: CF_FILES.data[0] }),
+    "https://api.curseforge.com/v1/mods/900001/files/6000001": () =>
+      json({ data: CF_FILES.data[0] }),
   };
 }
 
@@ -243,7 +259,11 @@ Deno.test("a CurseForge file with no download url explains the author opt-out", 
       }),
   });
   const err = await assertRejects(
-    () => resolvePack("https://www.curseforge.com/minecraft/modpacks/aca", { client, curseForgeApiKey: "$2a$10$k" }),
+    () =>
+      resolvePack("https://www.curseforge.com/minecraft/modpacks/aca", {
+        client,
+        curseForgeApiKey: "$2a$10$k",
+      }),
     AppError,
   ) as AppError;
   assertStringIncludes(String(err.hint).toLowerCase(), "third-party");
@@ -255,7 +275,11 @@ Deno.test("a CurseForge project that is not a modpack is rejected", async () => 
       json({ data: [] }),
   });
   await assertRejects(
-    () => resolvePack("https://www.curseforge.com/minecraft/modpacks/jei", { client, curseForgeApiKey: "$2a$10$k" }),
+    () =>
+      resolvePack("https://www.curseforge.com/minecraft/modpacks/jei", {
+        client,
+        curseForgeApiKey: "$2a$10$k",
+      }),
     AppError,
   );
 });

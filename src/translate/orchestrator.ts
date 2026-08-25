@@ -3,9 +3,9 @@ import type { TranslationUnit } from "../quests/adapter.ts";
 import { buildBatches } from "./batcher.ts";
 import type { TranslationCache } from "./cache.ts";
 import {
-  FatalProviderError,
   type Batch,
   type BatchRequest,
+  FatalProviderError,
   type ProviderUsage,
   type TranslationProvider,
 } from "./types.ts";
@@ -317,7 +317,9 @@ function idProblem(ids: ReturnType<typeof validateResponseIds>): string {
   const parts: string[] = [];
   if (ids.missing.length > 0) parts.push(`missing ids ${ids.missing.slice(0, 5).join(", ")}`);
   if (ids.unknown.length > 0) parts.push(`unknown ids ${ids.unknown.slice(0, 5).join(", ")}`);
-  if (ids.duplicates.length > 0) parts.push(`duplicate ids ${ids.duplicates.slice(0, 5).join(", ")}`);
+  if (ids.duplicates.length > 0) {
+    parts.push(`duplicate ids ${ids.duplicates.slice(0, 5).join(", ")}`);
+  }
   return parts.join("; ");
 }
 

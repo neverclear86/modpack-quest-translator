@@ -1,5 +1,5 @@
 import { AppError } from "../errors.ts";
-import { resolveTargetLocale, type ResolvedLocale } from "../locale.ts";
+import { type ResolvedLocale, resolveTargetLocale } from "../locale.ts";
 import type { OverlayLayout } from "../output/types.ts";
 
 export type RunMode = "run" | "help" | "version";
@@ -51,16 +51,50 @@ const PROVIDERS = ["claude-code", "echo"];
 
 /** Flags that take a value. Everything else is a boolean switch. */
 const VALUE_FLAGS = new Set([
-  "--url", "-u", "--archive", "--target", "-t", "--output", "-o", "--override-english",
-  "--source-locale", "--layout", "--provider", "--model", "--fallback-model", "--quality",
-  "--effort", "--batch-size", "--batch-chars", "--concurrency", "--retries", "--timeout",
-  "--max-download", "--max-cost-usd", "--cache-dir", "--previous", "--glossary",
-  "--glossary-file", "--curseforge-api-key",
+  "--url",
+  "-u",
+  "--archive",
+  "--target",
+  "-t",
+  "--output",
+  "-o",
+  "--override-english",
+  "--source-locale",
+  "--layout",
+  "--provider",
+  "--model",
+  "--fallback-model",
+  "--quality",
+  "--effort",
+  "--batch-size",
+  "--batch-chars",
+  "--concurrency",
+  "--retries",
+  "--timeout",
+  "--max-download",
+  "--max-cost-usd",
+  "--cache-dir",
+  "--previous",
+  "--glossary",
+  "--glossary-file",
+  "--curseforge-api-key",
 ]);
 
 const BOOLEAN_FLAGS = new Set([
-  "--override-en-us", "--emit-raw", "--force", "--dry-run", "--allow-prerelease", "--no-cache",
-  "--json", "--quiet", "--verbose", "--no-color", "--help", "-h", "--version", "-v",
+  "--override-en-us",
+  "--emit-raw",
+  "--force",
+  "--dry-run",
+  "--allow-prerelease",
+  "--no-cache",
+  "--json",
+  "--quiet",
+  "--verbose",
+  "--no-color",
+  "--help",
+  "-h",
+  "--version",
+  "-v",
   "--allow-partial",
 ]);
 
@@ -195,11 +229,14 @@ export function parseArgs(
   }
 
   if (raw.switches.has("--allow-partial")) {
-    throw usage("--allow-partial is not available in v1", {
-      hint: "v1 output is atomic: no installable archive is written unless every " +
-        "selected key validates. The work-in-progress cache is kept, so re-running " +
-        "resumes rather than starting over.",
-    }.hint);
+    throw usage(
+      "--allow-partial is not available in v1",
+      {
+        hint: "v1 output is atomic: no installable archive is written unless every " +
+          "selected key validates. The work-in-progress cache is kept, so re-running " +
+          "resumes rather than starting over.",
+      }.hint,
+    );
   }
 
   const url = single(raw, "--url", "-u");

@@ -23,8 +23,10 @@ export function buildReadme(meta: OverlayMeta, layout: OverlayLayout): string {
   const en: string[] = [
     "## English",
     "",
-    `This archive is a **quest-text translation overlay** for **${meta.packName ?? "this modpack"}**` +
-      `${meta.packVersion ? ` version **${meta.packVersion}**` : ""}.`,
+    `This archive is a **quest-text translation overlay** for **${
+      meta.packName ?? "this modpack"
+    }**` +
+    `${meta.packVersion ? ` version **${meta.packVersion}**` : ""}.`,
     "It contains only the translated FTB Quests localization file. It contains no mods,",
     "no pack assets and no credentials, and the original pack download was not modified.",
     "",
@@ -136,8 +138,8 @@ export function buildReadme(meta: OverlayMeta, layout: OverlayLayout): string {
     "## 日本語",
     "",
     `このアーカイブは **${meta.packName ?? "このモッドパック"}**` +
-      `${meta.packVersion ? `（バージョン **${meta.packVersion}**）` : ""}` +
-      "向けの**クエストテキスト翻訳オーバーレイ**です。",
+    `${meta.packVersion ? `（バージョン **${meta.packVersion}**）` : ""}` +
+    "向けの**クエストテキスト翻訳オーバーレイ**です。",
     "含まれるのは翻訳済みの FTB Quests 言語ファイルのみで、MOD 本体・パックの素材・",
     "認証情報は一切含まれていません。ダウンロード元のパックは変更していません。",
     "",

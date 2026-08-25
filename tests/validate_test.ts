@@ -1,9 +1,5 @@
 import { assertEquals } from "@std/assert";
-import {
-  validateDocument,
-  validateResponseIds,
-  validateUnit,
-} from "../src/translate/validate.ts";
+import { validateDocument, validateResponseIds, validateUnit } from "../src/translate/validate.ts";
 import type { TranslationUnit } from "../src/quests/adapter.ts";
 
 function unit(text: string, over: Partial<TranslationUnit> = {}): TranslationUnit {
@@ -109,7 +105,10 @@ Deno.test("response ids must match the request exactly", () => {
   assertEquals(missing.ok, false);
   assertEquals(missing.missing, ["c"]);
   const unknown = validateResponseIds(requested, [
-    { id: "a" }, { id: "b" }, { id: "c" }, { id: "z" },
+    { id: "a" },
+    { id: "b" },
+    { id: "c" },
+    { id: "z" },
   ]);
   assertEquals(unknown.ok, false);
   assertEquals(unknown.unknown, ["z"]);
@@ -124,7 +123,10 @@ Deno.test("document validation requires an identical key set", () => {
   const dropped = validateDocument(src, '{\n\ta.b.title: "1"\n}\n');
   assertEquals(dropped.ok, false);
   assertEquals(dropped.problems.some((p) => p.kind === "missing-key"), true);
-  const added = validateDocument(src, '{\n\ta.b.title: "1"\n\ta.c.title: "2"\n\ta.d.title: "3"\n}\n');
+  const added = validateDocument(
+    src,
+    '{\n\ta.b.title: "1"\n\ta.c.title: "2"\n\ta.d.title: "3"\n}\n',
+  );
   assertEquals(added.ok, false);
   assertEquals(added.problems.some((p) => p.kind === "extra-key"), true);
 });

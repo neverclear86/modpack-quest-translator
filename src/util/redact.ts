@@ -59,7 +59,7 @@ export class Redactor {
       out = out.split(secret).join(REDACTION);
     }
     for (const pattern of PATTERNS) {
-      out = out.replace(pattern, (match, ...groups) => {
+      out = out.replace(pattern, (_match, ...groups) => {
         const prefix = typeof groups[0] === "string" ? groups[0] : "";
         return prefix + REDACTION;
       });

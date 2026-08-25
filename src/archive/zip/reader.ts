@@ -76,6 +76,10 @@ function corrupt(message: string): AppError {
  * never trusted for sizes or names) and enforces the limits in DESIGN.md §4.
  * Nothing is written to disk and nothing is executed.
  */
+// The async signature is part of the contract: callers await readZip, and a
+// malformed or hostile archive must surface as a rejected promise rather than a
+// synchronous throw that no `await` would catch.
+// deno-lint-ignore require-await
 export async function readZip(
   bytes: Uint8Array,
   options: ZipReadOptions = {},

@@ -29,9 +29,7 @@ export class EchoProvider implements TranslationProvider {
       items: request.items.map((item) => ({
         id: item.id,
         // Whitespace-only strings must come back byte identical.
-        text: item.text.trim().length === 0
-          ? item.text
-          : `[${request.targetLocale}] ${item.text}`,
+        text: item.text.trim().length === 0 ? item.text : `[${request.targetLocale}] ${item.text}`,
       })),
       model: options.model,
     });

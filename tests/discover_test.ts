@@ -45,7 +45,8 @@ Deno.test("overrides wins over server-overrides when both are present", async ()
   const zip = await archiveOf({
     "modrinth.index.json": "{}",
     "overrides/config/ftbquests/quests/lang/en_us.snbt": LANG,
-    "server-overrides/config/ftbquests/quests/lang/en_us.snbt": '{\n\tquest.BBBB.title: "Server"\n}\n',
+    "server-overrides/config/ftbquests/quests/lang/en_us.snbt":
+      '{\n\tquest.BBBB.title: "Server"\n}\n',
   });
   const found = await discoverQuestSource(zip, { sourceLocale: "en_us" });
   assertEquals(found.root, "overrides/");
