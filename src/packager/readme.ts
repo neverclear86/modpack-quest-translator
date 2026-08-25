@@ -1,5 +1,12 @@
 import type { BundleManifest } from "../installer/bundle.ts";
-import { LINUX_BINARY_NAME, WINDOWS_BINARY_NAME } from "./launchers.ts";
+
+/** Human wording for a deno compile target triple. */
+function describeTarget(target: string): string {
+  if (target.includes("windows")) return "Windows x86_64";
+  if (target.includes("linux")) return "Linux x86_64";
+  if (target.includes("darwin")) return "macOS";
+  return target;
+}
 
 /**
  * The bundle README. Japanese first, because the person who needs it is
@@ -9,6 +16,11 @@ export function buildBundleReadme(manifest: BundleManifest): string {
   const pack = [manifest.pack.name, manifest.pack.version].filter(Boolean).join(" ");
   const targets = manifest.payload.map((entry) => entry.path);
   const hasBinaries = manifest.binaries.length > 0;
+  // Listed from the manifest rather than hard-coded: a --no-binaries bundle
+  // that promises executables it does not carry reads as a broken download.
+  const binaryRows = manifest.binaries
+    .map((binary) => `| \`${binary.path}\` | the installer, ${describeTarget(binary.target)} |\n`)
+    .join("");
 
   const noBinariesJa = hasBinaries ? "" : `
 > **注意**: この配布物には実行ファイルは含まれていません。ダブルクリックでの導入はできません。
@@ -109,9 +121,9 @@ Installing the same bundle twice never overwrites it.
 | ---- | ---------- |
 | \`INSTALL-WINDOWS.cmd\`, \`UNINSTALL-WINDOWS.cmd\` | Windows launchers |
 | \`INSTALL-LINUX.sh\`, \`UNINSTALL-LINUX.sh\` | Linux launchers |
-| \`bin/${WINDOWS_BINARY_NAME}\` | the installer, Windows x86_64 |
-| \`bin/${LINUX_BINARY_NAME}\` | the installer, Linux x86_64 |
-| \`payload/\` | the translated file${targets.length === 1 ? "" : "s"}: ${targets.join(", ")} |
+${binaryRows}| \`payload/\` | the translated file${targets.length === 1 ? "" : "s"}: ${
+    targets.join(", ")
+  } |
 | \`bundle-manifest.json\` | digests of everything above |
 | \`translation-manifest.json\`, \`translation-report.json\` | what the translation run did |
 

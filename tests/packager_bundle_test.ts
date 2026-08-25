@@ -216,6 +216,28 @@ Deno.test("a bundle built without binaries says so in the manifest and the READM
   assertStringIncludes(readme, "does not include the installer executables");
 });
 
+Deno.test("the README's contents table lists only files the bundle really holds", async () => {
+  // A player who reads "bin/mqt-installer-windows-x86_64.exe" in the table and
+  // cannot find it has been told the bundle is broken when it is not.
+  for (const binaries of [args(new Uint8Array()).binaries, []]) {
+    const built = await buildInstallerBundle(args(await realOverlay("instance"), { binaries }));
+    const entries = new Set(await entriesOf(built.bytes));
+    const archive = await readZip(built.bytes);
+    const readme = await archive.readText("aca-2.4-ja_jp-en_us-override/README.md");
+    const table = readme.slice(readme.indexOf("## What is in this bundle"));
+
+    const listed = [...table.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+    assert(listed.length > 0, "the table should list something");
+    for (const path of listed) {
+      const full = `aca-2.4-ja_jp-en_us-override/${path}`;
+      assert(
+        entries.has(full) || [...entries].some((entry) => entry.startsWith(full)),
+        `the README lists ${path}, which is not in the bundle`,
+      );
+    }
+  }
+});
+
 Deno.test("the README is Japanese first and covers SmartScreen, backups and undo", async () => {
   const built = await buildInstallerBundle(args(await realOverlay("instance")));
   const archive = await readZip(built.bytes);
