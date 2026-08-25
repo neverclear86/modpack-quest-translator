@@ -4,10 +4,15 @@ import { readZip } from "../src/archive/zip/reader.ts";
 import { buildOverlay } from "../src/output/package.ts";
 import type { OverlayMeta } from "../src/output/types.ts";
 import { createDefaultRedactor } from "../src/util/redact.ts";
+import { digestByKey } from "../src/quests/digest.ts";
+import { ftbQuestsLangAdapter } from "../src/quests/ftbquests_lang.ts";
+import { finishedRun } from "./helpers/translation_report.ts";
 import { parsePackagerArgs } from "../src/packager/args.ts";
 import { runPackager } from "../src/packager/run.ts";
 
 const JAPANESE = '{\n  quest.title: "空の冒険"\n}\n';
+/** What the run read; its per-key digests prove the payload is not it. */
+const ENGLISH = '{\n  quest.title: "Skyward Adventure"\n}\n';
 
 function refuses(argv: string[], needle: string): void {
   const error = assertThrows(() => parsePackagerArgs(argv), AppError);
@@ -93,6 +98,8 @@ async function harness(): Promise<Harness> {
     fallbackModel: "sonnet",
     archiveFlavour: "curseforge",
     sourcePath: "overrides/config/ftbquests/quests/lang/en_us.snbt",
+    keyCounts: { keys: 1, strings: 1, translated: 1, cached: 0, skipped: 0, fallback: 0 },
+    sourceKeyDigests: digestByKey(ftbQuestsLangAdapter.extract(ENGLISH).units),
   };
   const overlay = `${dir}/aca-2.4-ja_jp-en_us-override.zip`;
   await Deno.writeFile(
@@ -100,17 +107,7 @@ async function harness(): Promise<Harness> {
     await buildOverlay({
       translatedSnbt: JAPANESE,
       meta,
-      report: {
-        translated: 1,
-        cached: 0,
-        skipped: 0,
-        fallback: 0,
-        failed: 0,
-        batches: 1,
-        retries: 0,
-        modelsUsed: {},
-        usage: {},
-      } as never,
+      report: finishedRun(),
       layout: "instance",
       redactor: createDefaultRedactor(),
     }),

@@ -1,13 +1,12 @@
 import { AppError } from "../errors.ts";
 import { writeZip, type ZipWriteEntry } from "../archive/zip/writer.ts";
+import { shippedLangPath } from "../installer/bundle.ts";
 import { basenameOf, dirnameOf, joinPath, pathExists } from "../util/fs.ts";
 import type { Redactor } from "../util/redact.ts";
 import { buildReadme } from "./readme.ts";
 import type { OverlayLayout, OverlayMeta, OverlayReport } from "./types.ts";
 
 export type { OverlayLayout, OverlayMeta, OverlayReport } from "./types.ts";
-
-const LANG_DIR = "config/ftbquests/quests/lang";
 
 export interface BuildOverlayArgs {
   translatedSnbt: string;
@@ -22,8 +21,9 @@ export function overlayEntryPaths(
   meta: OverlayMeta,
   layout: Exclude<OverlayLayout, "auto">,
 ): string[] {
-  const name = `${meta.overrideEnglish ? "en_us" : meta.targetLocale}.snbt`;
-  const inner = `${LANG_DIR}/${name}`;
+  // Shared with the packager and the installer, so an overlay this writer
+  // produces is one they recognise. See `shippedLangPath`.
+  const inner = shippedLangPath(meta);
   if (layout === "overrides") return [`overrides/${inner}`];
   if (layout === "both") return [inner, `overrides/${inner}`];
   return [inner];

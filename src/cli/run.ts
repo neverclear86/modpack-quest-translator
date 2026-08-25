@@ -8,6 +8,7 @@ import { type ResolvedPack, resolveLocalArchive, resolvePack } from "../resolve/
 import { readZip } from "../archive/zip/reader.ts";
 import { discoverQuestSource } from "../archive/discover.ts";
 import { buildChapterIndex } from "../quests/chapter_index.ts";
+import { digestByKey } from "../quests/digest.ts";
 import type { TranslationUnit } from "../quests/adapter.ts";
 import { buildBatches } from "../translate/batcher.ts";
 import { glossaryVersion, PROMPT_VERSION, TranslationCache } from "../translate/cache.ts";
@@ -20,7 +21,7 @@ import { buildManifest, buildOverlay, buildReport, resolveOutputPlan } from "../
 import { buildReadme } from "../output/readme.ts";
 import type { OverlayLayout, OverlayMeta, UpdateDiff } from "../output/types.ts";
 import { createDefaultRedactor, Redactor } from "../util/redact.ts";
-import { fastHashHex, sha256Hex } from "../util/hash.ts";
+import { sha256Hex } from "../util/hash.ts";
 import { writeFileAtomic } from "../util/fs.ts";
 import type { CommandRunner } from "../util/command.ts";
 
@@ -432,18 +433,6 @@ async function loadGlossary(options: CliOptions): Promise<Record<string, string>
 }
 
 /** Digest each SNBT key's whole value, so array edits are detected too. */
-function digestByKey(units: readonly TranslationUnit[]): Record<string, string> {
-  const byKey = new Map<string, string[]>();
-  for (const unit of units) {
-    const parts = byKey.get(unit.key) ?? [];
-    parts.push(unit.text);
-    byKey.set(unit.key, parts);
-  }
-  const out: Record<string, string> = {};
-  for (const [key, parts] of byKey) out[key] = fastHashHex(JSON.stringify(parts));
-  return out;
-}
-
 async function diffAgainstPrevious(
   path: string,
   current: Record<string, string>,

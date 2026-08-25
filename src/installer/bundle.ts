@@ -15,6 +15,21 @@ export const PAYLOAD_DIR = "payload";
  */
 export const QUEST_LANG_DIR = "config/ftbquests/quests/lang";
 
+/**
+ * The one file a run installs, and its name.
+ *
+ * Override mode replaces the `en_us` file FTB Quests falls back to when the
+ * player's own language has none, so the name is `en_us` whatever locale the
+ * text was read from (DESIGN.md 7.2). The overlay writer, the packager's
+ * provenance check and this parser all have to agree on that rule, so it is
+ * written once: a disagreement means a genuine overlay gets refused.
+ */
+export function shippedLangPath(
+  meta: { targetLocale: string; overrideEnglish: boolean },
+): string {
+  return `${QUEST_LANG_DIR}/${meta.overrideEnglish ? "en_us" : meta.targetLocale}.snbt`;
+}
+
 export interface BundlePayloadEntry {
   /** Instance-relative destination, always under QUEST_LANG_DIR. */
   path: string;

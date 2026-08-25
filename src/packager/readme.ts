@@ -75,6 +75,14 @@ Prism / MultiMC の場合は \`.minecraft\` または \`minecraft\` を含むフ
 - **管理者権限は不要です**。管理者として実行する必要は一切ありません。
 - ネットワークには接続しません。読み書きするのは指定したインスタンスの中だけです。
 
+### ハッシュ値でわかること・わからないこと
+
+\`bundle-manifest.json\` には \`payload/\` と \`bin/\` の全ファイルの SHA-256 が記録されており、
+導入前に payload 側の照合が行われます。壊れたダウンロードはここで弾かれます。
+ただしこの配布物には**署名がありません**。payload を差し替えられる人は、その隣にある
+\`bundle-manifest.json\` も同じように書き換えられます。このハッシュ値が守ってくれるのは
+破損や取り違えであって、意図的な改変ではありません。入手元を信頼できる範囲で信頼してください。
+
 ---
 
 ## English
@@ -113,6 +121,15 @@ Installing the same bundle twice never overwrites it.
 - **No administrator rights are needed.** Anything asking for elevation is a bug.
 - No network access, no telemetry. Nothing outside the instance you name is read or written.
 
+### What the digests prove, and what they do not
+
+\`bundle-manifest.json\` records a SHA-256 for every file in \`payload/\` and \`bin/\`, and the
+installer checks the payload against it before touching your instance, so a download that arrived
+damaged is refused rather than installed. This bundle is **not signed**: whoever can change a
+payload file can change the manifest sitting next to it. These digests catch corruption and
+mix-ups, not someone who set out to deceive you. Trust the bundle as far as you trust where you
+got it from.
+
 ---
 
 ## What is in this bundle / 収録物
@@ -127,7 +144,13 @@ ${binaryRows}| \`payload/\` | the translated file${targets.length === 1 ? "" : "
 | \`bundle-manifest.json\` | digests of everything above |
 | \`translation-manifest.json\`, \`translation-report.json\` | what the translation run did |
 
-The pack's own ${manifest.sourceLocale} text is **not** in this bundle. Only the translated file is.
+The pack's own ${manifest.sourceLocale} text is **not** in this bundle. The
+\`containsSourceProse: false\` in \`bundle-manifest.json\` is a check rather than a promise: the
+packager re-reads the translated file key by key against the digests the translation run recorded
+for the text it read, and refuses to build a bundle whose payload is still that original prose.
+Like every digest here, that stops the mistake, not a forger.
+
+このモッドパック本来の ${manifest.sourceLocale} の文章はこの配布物には含まれていません。
 
 Built by modpack-quest-translator ${manifest.toolVersion} on ${manifest.generatedAt}.
 `;

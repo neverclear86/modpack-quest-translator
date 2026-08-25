@@ -1,0 +1,254 @@
+/**
+ * `containsSourceProse: false` has to be earned.
+ *
+ * The packager used to accept any ZIP with a file under the quest lang
+ * directory, copy its bytes into `payload/`, and write the claim into the
+ * manifest unconditionally. Handing it the pack's own `en_us.snbt` and a
+ * `--generated-at` was enough to redistribute the original English prose under
+ * a manifest swearing it had not.
+ *
+ * What can be checked without signing is checked here, and what cannot is said
+ * plainly in the bundle README rather than implied by a boolean.
+ */
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { AppError } from "../src/errors.ts";
+import { readZip } from "../src/archive/zip/reader.ts";
+import { writeZip } from "../src/archive/zip/writer.ts";
+import { buildOverlay } from "../src/output/package.ts";
+import type { OverlayMeta } from "../src/output/types.ts";
+import type { TranslateReport } from "../src/translate/orchestrator.ts";
+import { buildInstallerBundle, type PackageBundleArgs } from "../src/packager/bundle.ts";
+import { digestByKey } from "../src/quests/digest.ts";
+import { ftbQuestsLangAdapter } from "../src/quests/ftbquests_lang.ts";
+import { createDefaultRedactor } from "../src/util/redact.ts";
+import { finishedRun } from "./helpers/translation_report.ts";
+
+const LANG = "config/ftbquests/quests/lang";
+
+const ENGLISH = `{
+  aca.quest.1.title: "Build an Airship"
+  aca.quest.1.desc: "Assemble a hull and sail the clouds"
+  aca.quest.2.title: "Reach the Stratosphere"
+}
+`;
+
+const JAPANESE = `{
+  aca.quest.1.title: "飛行船を作る"
+  aca.quest.1.desc: "船体を組み立てて雲を渡る"
+  aca.quest.2.title: "成層圏に到達する"
+}
+`;
+
+function sourceDigests(snbt: string): Record<string, string> {
+  return digestByKey(ftbQuestsLangAdapter.extract(snbt).units);
+}
+
+function meta(overrides: Partial<OverlayMeta> = {}): OverlayMeta {
+  return {
+    toolVersion: "1.1.1",
+    generatedAt: "2026-08-25T00:00:00.000Z",
+    sourceUrl: "https://example.invalid/aca.zip",
+    packName: "All of Create: Aeronautics",
+    packVersion: "2.4",
+    sourceArchiveSha256: "d".repeat(64),
+    sourceLocale: "en_us",
+    targetLocale: "ja_jp",
+    targetLanguage: "Japanese",
+    overrideEnglish: true,
+    provider: "echo",
+    model: "haiku",
+    fallbackModel: "sonnet",
+    archiveFlavour: "curseforge",
+    sourcePath: `overrides/${LANG}/en_us.snbt`,
+    keyCounts: { keys: 3, strings: 3, translated: 3, cached: 0, skipped: 0, fallback: 0 },
+    sourceKeyDigests: sourceDigests(ENGLISH),
+    ...overrides,
+  };
+}
+
+const REPORT: TranslateReport = finishedRun({ translated: 3 });
+
+async function overlayOf(
+  snbt: string,
+  overrides: Partial<OverlayMeta> = {},
+  report: TranslateReport = REPORT,
+): Promise<Uint8Array> {
+  return await buildOverlay({
+    translatedSnbt: snbt,
+    meta: meta(overrides),
+    report,
+    layout: "instance",
+    redactor: createDefaultRedactor(),
+  });
+}
+
+function args(overlay: Uint8Array, overrides: Partial<PackageBundleArgs> = {}): PackageBundleArgs {
+  return {
+    overlay,
+    bundleId: "aca-2.4-ja_jp-en_us-override",
+    toolVersion: "1.1.1",
+    binaries: [],
+    ...overrides,
+  };
+}
+
+async function refused(
+  overlay: Uint8Array,
+  needle: string,
+  overrides: Partial<PackageBundleArgs> = {},
+): Promise<void> {
+  const error = await assertRejects(
+    () => buildInstallerBundle(args(overlay, overrides)),
+    AppError,
+    undefined,
+    `expected the overlay to be refused for: ${needle}`,
+  );
+  assertEquals(error.code, "E_BUNDLE");
+  assertStringIncludes(error.message, needle);
+}
+
+Deno.test("a genuine translated overlay packages", async () => {
+  const built = await buildInstallerBundle(args(await overlayOf(JAPANESE)));
+  assertEquals(built.manifest.containsSourceProse, false);
+  assertEquals(built.manifest.targetLocale, "ja_jp");
+  assertEquals(built.manifest.payload[0].path, `${LANG}/en_us.snbt`);
+});
+
+Deno.test("an overlay whose payload is still the pack's own English is refused", async () => {
+  // Every key digests to exactly what the run recorded as the *source*, so
+  // whatever this is, it is not the translation the manifest describes.
+  await refused(await overlayOf(ENGLISH), "the source text this manifest describes");
+});
+
+Deno.test("a hand-made overlay with no translation manifest is refused", async () => {
+  const overlay = await writeZip([{ path: `${LANG}/en_us.snbt`, text: ENGLISH }]);
+  await refused(overlay, "translation-manifest.json");
+  // ...and passing --generated-at does not buy a way past it.
+  await refused(overlay, "translation-manifest.json", {
+    generatedAt: "2026-08-25T00:00:00.000Z",
+  });
+});
+
+Deno.test("a manifest with no source key digests cannot prove anything, so it is refused", async () => {
+  await refused(await overlayOf(JAPANESE, { sourceKeyDigests: {} }), "sourceKeyDigests");
+});
+
+Deno.test("a payload whose keys are not the ones the run recorded is refused", async () => {
+  const different = `{
+  other.quest.1.title: "べつのもの"
+}
+`;
+  await refused(await overlayOf(different), "keys");
+});
+
+Deno.test("a manifest claiming nothing was translated is refused", async () => {
+  await refused(
+    await overlayOf(JAPANESE, {
+      keyCounts: { keys: 3, strings: 3, translated: 0, cached: 0, skipped: 3, fallback: 0 },
+    }),
+    "translated",
+  );
+});
+
+Deno.test("a report with failures is refused: a partial translation is not a bundle", async () => {
+  const overlay = await overlayOf(JAPANESE, {}, {
+    ...REPORT,
+    failed: [{ id: "aca.quest.2.title", reason: "placeholder lost" }],
+  });
+  await refused(overlay, "failed");
+});
+
+Deno.test("a manifest fabricated field by field is refused", async () => {
+  const genuine = await overlayOf(JAPANESE);
+  const facts = {
+    tool: "modpack-quest-translator",
+    toolVersion: "1.1.1",
+    generatedAt: "2026-08-25T00:00:00.000Z",
+    sourceLocale: "en_us",
+    targetLocale: "ja_jp",
+    overrideEnglish: true,
+    keyCounts: { keys: 3, strings: 3, translated: 3, cached: 0, skipped: 0, fallback: 0 },
+    sourceKeyDigests: sourceDigests(ENGLISH),
+  };
+  const cases: [Record<string, unknown>, string][] = [
+    [{ tool: "someone-elses-tool" }, "tool"],
+    [{ generatedAt: "yesterday" }, "generatedAt"],
+    [{ generatedAt: "2026-13-45T99:00:00.000Z" }, "generatedAt"],
+    [{ sourceLocale: "../../etc" }, "sourceLocale"],
+    [{ targetLocale: "en_us" }, "targetLocale"],
+    [{ toolVersion: "" }, "toolVersion"],
+  ];
+  for (const [override, needle] of cases) {
+    await refused(genuine, needle, {
+      translationManifest: JSON.stringify({ ...facts, ...override }),
+    });
+  }
+});
+
+Deno.test("a payload named for the wrong locale is refused", async () => {
+  // overrideEnglish means the Japanese text ships under the en_us name. A
+  // payload named anything else did not come from the run this manifest
+  // describes.
+  const overlay = await writeZip([
+    { path: `${LANG}/ja_jp.snbt`, text: JAPANESE },
+    {
+      path: "translation-manifest.json",
+      text: JSON.stringify({
+        tool: "modpack-quest-translator",
+        toolVersion: "1.1.1",
+        generatedAt: "2026-08-25T00:00:00.000Z",
+        sourceLocale: "en_us",
+        targetLocale: "ja_jp",
+        overrideEnglish: true,
+        keyCounts: { keys: 3, strings: 3, translated: 3, cached: 0, skipped: 0, fallback: 0 },
+        sourceKeyDigests: sourceDigests(ENGLISH),
+      }),
+    },
+    { path: "translation-report.json", text: JSON.stringify(REPORT) },
+  ]);
+  await refused(overlay, "en_us.snbt");
+});
+
+Deno.test("override mode ships the English fallback file, whatever locale was read", async () => {
+  // `--override-english` replaces the en_us file FTB Quests falls back to, so
+  // the payload is named en_us even for a run that read de_de (DESIGN.md 7.2).
+  // The overlay writer, the provenance check and the installer's manifest
+  // parser all have to agree on that, or a genuine overlay is refused.
+  const built = await buildInstallerBundle(
+    args(await overlayOf(JAPANESE, { sourceLocale: "de_de" })),
+  );
+  assertEquals(built.manifest.payload[0].path, `${LANG}/en_us.snbt`);
+  assertEquals(built.manifest.sourceLocale, "de_de");
+});
+
+Deno.test("a report whose failures were edited out to a bare count is refused", async () => {
+  // A real report lists what failed. A hand-written `failed: 0` is a manifest
+  // this tool never wrote.
+  const overlay = await writeZip([
+    { path: `${LANG}/en_us.snbt`, text: JAPANESE },
+    { path: "translation-manifest.json", text: await manifestText() },
+    { path: "translation-report.json", text: JSON.stringify({ ...REPORT, failed: 0 }) },
+  ]);
+  await refused(overlay, "failed");
+});
+
+Deno.test("the bundle README says what the digests prove and what they do not", async () => {
+  const built = await buildInstallerBundle(args(await overlayOf(JAPANESE)));
+  const bundle = await readZip(built.bytes);
+  const readme = await bundle.readText("aca-2.4-ja_jp-en_us-override/README.md");
+
+  // The digests are worth describing, because they do catch a corrupt download.
+  assertStringIncludes(readme, "SHA-256");
+  // But an unsigned bundle cannot prove who made it, and the README says so in
+  // both languages rather than letting `containsSourceProse: false` imply it.
+  assertStringIncludes(readme, "not signed");
+  assertStringIncludes(readme, "署名がありません");
+  // And the source-prose claim is described as the check it is, not as proof.
+  assertStringIncludes(readme, "refuses to build");
+});
+
+/** The manifest a genuine run writes, extracted from a genuine overlay. */
+async function manifestText(): Promise<string> {
+  const overlay = await readZip(await overlayOf(JAPANESE));
+  return await overlay.readText("translation-manifest.json");
+}

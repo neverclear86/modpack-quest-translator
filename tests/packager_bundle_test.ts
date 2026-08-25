@@ -8,9 +8,14 @@ import { createDefaultRedactor } from "../src/util/redact.ts";
 import { sha256Hex } from "../src/util/hash.ts";
 import { buildInstallerBundle, type PackageBundleArgs } from "../src/packager/bundle.ts";
 import { parseBundleManifest } from "../src/installer/bundle.ts";
+import { digestByKey } from "../src/quests/digest.ts";
+import { ftbQuestsLangAdapter } from "../src/quests/ftbquests_lang.ts";
+import { finishedRun } from "./helpers/translation_report.ts";
 
 const JAPANESE = '{\n  quest.title: "空の冒険"\n  quest.desc: "飛行船を作る"\n}\n';
 const ENGLISH_PROSE = "Build an airship and sail the clouds";
+/** What the run read. Its per-key digests are what prove the payload is not it. */
+const ENGLISH = `{\n  quest.title: "Skyward Adventure"\n  quest.desc: "${ENGLISH_PROSE}"\n}\n`;
 const LANG = "config/ftbquests/quests/lang/en_us.snbt";
 
 function meta(): OverlayMeta {
@@ -32,6 +37,8 @@ function meta(): OverlayMeta {
     fallbackModel: "sonnet",
     archiveFlavour: "curseforge",
     sourcePath: "overrides/config/ftbquests/quests/lang/en_us.snbt",
+    keyCounts: { keys: 2, strings: 2, translated: 2, cached: 0, skipped: 0, fallback: 0 },
+    sourceKeyDigests: digestByKey(ftbQuestsLangAdapter.extract(ENGLISH).units),
   };
 }
 
@@ -39,17 +46,7 @@ async function realOverlay(layout: "instance" | "overrides" | "both"): Promise<U
   return await buildOverlay({
     translatedSnbt: JAPANESE,
     meta: meta(),
-    report: {
-      translated: 2,
-      cached: 0,
-      skipped: 0,
-      fallback: 0,
-      failed: 0,
-      batches: 1,
-      retries: 0,
-      modelsUsed: { haiku: 1 },
-      usage: {},
-    } as never,
+    report: finishedRun({ translated: 2 }),
     layout,
     redactor: createDefaultRedactor(),
   });
@@ -224,7 +221,12 @@ Deno.test("the README's contents table lists only files the bundle really holds"
     const entries = new Set(await entriesOf(built.bytes));
     const archive = await readZip(built.bytes);
     const readme = await archive.readText("aca-2.4-ja_jp-en_us-override/README.md");
-    const table = readme.slice(readme.indexOf("## What is in this bundle"));
+    // The table rows only: the prose below them names fields of the manifest as
+    // well as files, and a field is not something a player goes looking for.
+    const table = readme.slice(readme.indexOf("## What is in this bundle"))
+      .split("\n")
+      .filter((line) => line.startsWith("|"))
+      .join("\n");
 
     const listed = [...table.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
     assert(listed.length > 0, "the table should list something");
@@ -266,12 +268,16 @@ Deno.test("the translation manifest and report travel with the bundle verbatim",
   }
 });
 
-Deno.test("an overlay with no timestamp to inherit is refused, not stamped from the clock", async () => {
+Deno.test("an overlay with no translation manifest has no timestamp and no provenance", async () => {
+  // The clock is never a fallback, and neither is --generated-at: a bundle
+  // whose overlay cannot be shown to be a translation is refused either way.
   const overlay = await writeZip([{ path: LANG, text: JAPANESE }]);
   const { generatedAt: _dropped, ...rest } = args(overlay);
-  const error = await assertRejects(() => buildInstallerBundle(rest), AppError);
-  assertEquals(error.code, "E_INVALID_INPUT");
-  assertStringIncludes(error.hint ?? "", "--generated-at");
+  for (const candidate of [rest, args(overlay)]) {
+    const error = await assertRejects(() => buildInstallerBundle(candidate), AppError);
+    assertEquals(error.code, "E_BUNDLE");
+    assertStringIncludes(error.message, "translation-manifest.json");
+  }
 });
 
 Deno.test("--generated-at overrides the translation run's timestamp", async () => {

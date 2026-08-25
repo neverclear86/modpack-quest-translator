@@ -11,10 +11,15 @@ import {
 } from "../installer/bundle.ts";
 import { sha256Hex } from "../util/hash.ts";
 import { EXECUTABLE_MODE, linuxLauncher, windowsLauncher } from "./launchers.ts";
+import {
+  isoTimestamp,
+  TRANSLATION_MANIFEST_NAME,
+  TRANSLATION_REPORT_NAME,
+  verifyTranslationProvenance,
+} from "./provenance.ts";
 import { buildBundleReadme } from "./readme.ts";
 
-export const TRANSLATION_MANIFEST_NAME = "translation-manifest.json";
-export const TRANSLATION_REPORT_NAME = "translation-report.json";
+export { TRANSLATION_MANIFEST_NAME, TRANSLATION_REPORT_NAME };
 
 /** Overlay entries that are metadata rather than installable payload. */
 const OVERLAY_METADATA = new Set(["README.md", TRANSLATION_MANIFEST_NAME, TRANSLATION_REPORT_NAME]);
@@ -61,11 +66,16 @@ function packageError(message: string, hint?: string): AppError {
 /**
  * Build an installer bundle from an overlay this tool produced.
  *
- * The packager copies payload bytes only from entries the overlay itself holds
- * under the quest lang directory, and refuses everything else outright. That
- * refusal is the mechanical guarantee behind "the pack's own source prose is
- * never redistributed": there is no code path by which a file from the original
- * pack can reach `payload/`.
+ * Two things stand between the pack's own prose and `payload/`. The first is
+ * the allowlist: bytes are copied only from entries the overlay itself holds
+ * under the quest lang directory, and anything else is refused outright. The
+ * second, and the one that matters, is `verifyTranslationProvenance` -- the
+ * overlay has to carry the manifest and report of a translation run that
+ * finished, and the payload has to *not* be the source text that run recorded.
+ * An overlay holding the original `en_us.snbt` fails that whether or not it is
+ * dressed in a manifest, because every key still digests to the source.
+ *
+ * That is not a signature and is not claimed as one; see `provenance.ts`.
  */
 export async function buildInstallerBundle(args: PackageBundleArgs): Promise<BuiltBundle> {
   const overlay = await readZip(args.overlay);
@@ -108,18 +118,16 @@ export async function buildInstallerBundle(args: PackageBundleArgs): Promise<Bui
   const translationManifest = args.translationManifest ??
     decode(metadata.get(TRANSLATION_MANIFEST_NAME));
   const translationReport = args.translationReport ?? decode(metadata.get(TRANSLATION_REPORT_NAME));
-  const source = readTranslationManifest(translationManifest);
-  const generatedAt = args.generatedAt ?? source.generatedAt;
-  if (generatedAt === undefined) {
-    throw new AppError(
-      "E_INVALID_INPUT",
-      `The overlay has no ${TRANSLATION_MANIFEST_NAME} to take a timestamp from`,
-      {
-        hint: "Pass --generated-at <iso>, or --manifest pointing at the manifest the " +
-          "translation run wrote.",
-      },
-    );
-  }
+  const source = verifyTranslationProvenance({
+    manifestText: translationManifest,
+    reportText: translationReport,
+    payloads,
+  });
+  // `--generated-at` overrides the timestamp for reproducibility; it is not a
+  // way past the provenance check, and it still has to be a real timestamp.
+  const generatedAt = args.generatedAt === undefined
+    ? source.generatedAt
+    : isoTimestamp(args.generatedAt, "--generated-at");
 
   const payloadPaths = [...payloads.keys()].sort();
   const manifest: BundleManifest = {
@@ -203,46 +211,6 @@ function installTargetFor(path: string): string | undefined {
     return `${QUEST_LANG_DIR}/${name}`;
   }
   return undefined;
-}
-
-interface TranslationFacts {
-  packName?: string;
-  packVersion?: string;
-  sourceLocale: string;
-  targetLocale: string;
-  overrideEnglish: boolean;
-  generatedAt?: string;
-}
-
-function readTranslationManifest(text: string | undefined): TranslationFacts {
-  const fallback: TranslationFacts = {
-    sourceLocale: "en_us",
-    targetLocale: "unknown",
-    overrideEnglish: false,
-  };
-  if (text === undefined) return fallback;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    throw packageError(
-      `${TRANSLATION_MANIFEST_NAME} is not valid JSON`,
-      "Pass --manifest pointing at the manifest the translation run wrote.",
-    );
-  }
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return fallback;
-  const body = raw as Record<string, unknown>;
-  const pack = typeof body.pack === "object" && body.pack !== null
-    ? body.pack as Record<string, unknown>
-    : {};
-  return {
-    ...(typeof pack.name === "string" ? { packName: pack.name } : {}),
-    ...(typeof pack.version === "string" ? { packVersion: pack.version } : {}),
-    sourceLocale: typeof body.sourceLocale === "string" ? body.sourceLocale : fallback.sourceLocale,
-    targetLocale: typeof body.targetLocale === "string" ? body.targetLocale : fallback.targetLocale,
-    overrideEnglish: body.overrideEnglish === true,
-    ...(typeof body.generatedAt === "string" ? { generatedAt: body.generatedAt } : {}),
-  };
 }
 
 function decode(bytes: Uint8Array | undefined): string | undefined {
