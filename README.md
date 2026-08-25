@@ -27,8 +27,9 @@ mod JARs, pack assets or credentials are ever placed in the output.
 
 ## Requirements
 
-- [Deno](https://deno.com/) 1.41 or newer — only to build or run from source. The compiled binary
-  has no runtime dependencies.
+- [Deno](https://deno.com/) 1.41 or newer — only to build or run from source. Both majors are
+  supported and verified: `1.41.1`, `1.46.3` and `2.5.6`. The compiled binary has no runtime
+  dependencies.
 - [Claude Code](https://claude.com/claude-code), already installed and logged in, for the default
   translation provider. The tool drives the `claude` CLI as a subprocess; it never calls Anthropic
   HTTP APIs directly and never runs `claude update`.
@@ -192,9 +193,9 @@ Presets: `--quality fast` (haiku only), `balanced` (default), `best` (sonnet, fa
 
 Every result is joined **by id**, never by position. Missing, unknown or duplicate ids fail the
 batch. Each translation is then checked for preserved formatting codes (`&6`, `§r`), placeholders
-(`%s`, `%1$s`, `{image:...}`, `<mod_var>`), the literal `\&` escape, empty strings staying empty,
-and any glossary terms. Finally the whole document must re-parse as SNBT with exactly the same key
-set and value shapes as the source.
+(`%s`, `%02d`, `%1$.2f`, `%<s`, `%%`, `{image:...}`, `<mod_var>`), embedded line breaks, the literal
+`\&` escape, empty strings staying empty, and any glossary terms. Finally the whole document must
+re-parse as SNBT with exactly the same key set and value shapes as the source.
 
 **Output is atomic.** If any string cannot be validated, no installable archive is written at all.
 The cache keeps everything that did succeed, so re-running resumes rather than starting over.

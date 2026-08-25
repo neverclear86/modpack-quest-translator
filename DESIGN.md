@@ -12,7 +12,15 @@ verbatim.
 
 ## 1. Runtime and dependency policy
 
-- **Deno + TypeScript**, as mandated. Verified toolchain: `deno 1.41.1`.
+- **Deno + TypeScript**, as mandated. One source tree runs on both supported majors; fmt, lint,
+  check and the full suite are verified on `deno 1.41.1`, `1.46.3` and `2.5.6`, and the binary is
+  compiled and smoke-tested with Deno 2.
+  - The two majors disagree on two APIs. `Deno.fsync` was removed in Deno 2 in favour of
+    `FsFile.sync`, which Deno 1.41 has but gates behind `--unstable-fs` -- and a gated call _aborts
+    the process_ rather than throwing, so it cannot be attempted speculatively; `util/fs.ts` picks
+    by feature-testing `Deno.fsync`. Deno 2's TypeScript also makes `Uint8Array` generic over its
+    backing store, so it no longer satisfies `BufferSource`, `BlobPart` or `BodyInit`;
+    `util/bytes.ts` holds the single cast that reconciles them.
 - **Zero third-party runtime dependencies.** Only `https://deno.land/std@0.219.0` is used, and only
   inside tests (`assert`) plus `path`/`fs` helpers.
   - Rationale: `deno compile` must produce a standalone binary; the security requirements (Zip Slip,
@@ -284,18 +292,26 @@ Per unit, source vs. translation:
 
 1. Empty/whitespace-only source ⇒ translation must be byte-identical (keeps empty strings empty).
 2. Multiset of **formatting codes** (`&x`, `§x`, honouring `\&` escapes) equal.
-3. Multiset of **placeholders** equal: `%s`/`%d`/`%f`, `%1$s`, `{…}` blocks (FTB `{image:…}` etc.),
-   `$(…)`, `<…>` mod variables.
+3. Multiset of **placeholders** equal. printf/`java.util.Formatter` conversions are matched as whole
+   specifications — `%[argument_index$ | <][flags][width][.precision]conversion`, so `%02d`,
+   `%1$.2f`, `%<s`, `%u` and `%%` each count as one token and cannot come back subtly rewritten as
+   `%2d` or `%1$.0f`. Also `{…}` blocks (FTB `{image:…}` etc.), `$(…)`, `<…>` mod variables. The
+   space flag (`% d`) is deliberately not recognised: it collides with ordinary prose ("50%
+   stronger") and a false positive here hard-fails an atomic run. One detector in `quests/tokens.ts`
+   serves both this check and the "is there any prose here to translate?" test, so the two cannot
+   disagree.
 4. Escaped-token preservation: every literal `\&` in the source appears the same number of times.
-5. Non-empty source ⇒ non-empty translation.
-6. Response-level: every requested id present exactly once; no unknown ids; no duplicates.
+5. **Line breaks** identical as an ordered sequence, not merely in count — a three-line quest
+   description may not come back as one reflowed paragraph, and a CRLF may not quietly become an LF.
+6. Non-empty source ⇒ non-empty translation.
+7. Response-level: every requested id present exactly once; no unknown ids; no duplicates.
    (Requirement: "duplicate/missing/unknown IDs fail validation".)
 
 Document-level, after `apply()`:
 
-7. Output re-parses as SNBT.
-8. Key set **exactly** equal to source key set.
-9. Value shapes compatible: string↔string, array↔array of identical length.
+8. Output re-parses as SNBT.
+9. Key set **exactly** equal to source key set.
+10. Value shapes compatible: string↔string, array↔array of identical length.
 
 Failures are per-batch and drive retry/fallback; a failure that survives all attempts fails the run
 without writing an installable archive (§7).
@@ -304,8 +320,10 @@ without writing an installable archive (§7).
 
 ```
 for each batch:
-  cache lookup (primary ns, then fallback ns) → hits removed from the request
-  if nothing left → mark "cached"
+  cache lookup (primary ns, then fallback ns), each candidate re-validated
+      against the current unit and glossary → a failure is a miss, and the
+      untrusted entry is deleted rather than re-offered next run
+  hits removed from the request; if nothing left → mark "cached"
   attempt 1: primary model  (--model, default haiku, --effort low)
   on transient error → bounded exponential backoff (3 attempts, 500 ms × 2ⁿ, capped 8 s)
                      → budget exhausted: fail the batch, do NOT escalate the model
