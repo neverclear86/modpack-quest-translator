@@ -255,11 +255,15 @@ types.
 
 ### 6.2 Batching (`translate/batcher.ts`)
 
-Deterministic, stable-ordered. A batch is closed when either bound is hit: `--batch-size` items
-(default 40) **or** `--batch-chars` characters (default 6000). Units never split across batches.
-Batches never mix chapters. A single unit larger than `--batch-chars` becomes its own batch and is
-pre-flagged `longProse` so it goes straight to the fallback model (requirement: sonnet for
-"unusually long prose").
+Deterministic, stable-ordered. Units are **grouped by chapter first** (chapters in first-seen order,
+source order preserved inside each), then each chapter's units are chunked: a batch closes when
+either bound is hit, `--batch-size` items (default 40) **or** `--batch-chars` characters (default
+6000). Grouping first is load-bearing, not cosmetic — SNBT id order interleaves chapters, so closing
+a batch on every chapter _change_ degenerates to roughly one batch per string (measured on All of
+Create: Aeronautics v2.4: 1030 strings produced **593** batches that way, **39** when grouped).
+Units never split across batches and batches never mix chapters. A single unit larger than
+`--batch-chars` becomes its own batch and is pre-flagged `longProse` so it goes straight to the
+fallback model (requirement: sonnet for "unusually long prose").
 
 ### 6.3 Cache (`translate/cache.ts`)
 

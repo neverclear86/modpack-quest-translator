@@ -78,3 +78,71 @@ Deno.test("units keep their order inside a batch", () => {
     "quest.2.title",
   ]);
 });
+
+Deno.test("interleaved chapter units collapse into chapter-grouped batches", () => {
+  // SNBT id order interleaves chapters, which is what the real pack looks like.
+  const chapters = ["Create: Core", "Exploration", "Aeronautics"];
+  const interleaved = units(9, (i) => ({ chapter: chapters[i % 3] }));
+
+  const batches = buildBatches(interleaved, { maxItems: 10, maxChars: 10_000 });
+
+  // One batch per chapter, in first-seen order, not one batch per chapter change.
+  assertEquals(batches.map((b) => b.chapter), ["Create: Core", "Exploration", "Aeronautics"]);
+  assertEquals(batches.map((b) => b.units.length), [3, 3, 3]);
+  // Source order is preserved inside each chapter.
+  assertEquals(batches[0].units.map((u) => u.id), [
+    "quest.0.title",
+    "quest.3.title",
+    "quest.6.title",
+  ]);
+  assertEquals(batches[1].units.map((u) => u.id), [
+    "quest.1.title",
+    "quest.4.title",
+    "quest.7.title",
+  ]);
+  // Nothing is lost.
+  assertEquals(batches.flatMap((b) => b.units).length, 9);
+});
+
+Deno.test("chapter groups are still chunked by the item and character limits", () => {
+  const interleaved = units(12, (i) => ({ chapter: i % 2 === 0 ? "Alpha" : "Beta" }));
+  const batches = buildBatches(interleaved, { maxItems: 4, maxChars: 10_000 });
+  assertEquals(batches.map((b) => b.chapter), ["Alpha", "Alpha", "Beta", "Beta"]);
+  assertEquals(batches.map((b) => b.units.length), [4, 2, 4, 2]);
+});
+
+Deno.test("units without a chapter group together rather than splitting the batch", () => {
+  const mixed = units(6, (i) => ({ chapter: i % 2 === 0 ? "Alpha" : undefined }));
+  const batches = buildBatches(mixed, { maxItems: 10, maxChars: 10_000 });
+  assertEquals(batches.length, 2);
+  assertEquals(batches[0].chapter, "Alpha");
+  assertEquals(batches[1].chapter, undefined);
+  assertEquals(batches[1].units.map((u) => u.id), [
+    "quest.1.title",
+    "quest.3.title",
+    "quest.5.title",
+  ]);
+});
+
+Deno.test("a long-prose unit is isolated without breaking up its chapter", () => {
+  const list = [
+    ...units(1, () => ({ id: "a.title", key: "a.title", chapter: "Alpha" })),
+    ...units(1, () => ({ id: "b.title", key: "b.title", chapter: "Beta" })),
+    ...units(1, () => ({
+      id: "a.big.quest_desc",
+      key: "a.big.quest_desc",
+      chapter: "Alpha",
+      text: "y".repeat(5000),
+    })),
+    ...units(1, () => ({ id: "a2.title", key: "a2.title", chapter: "Alpha" })),
+  ];
+  const batches = buildBatches(list, { maxItems: 10, maxChars: 500 });
+  assertEquals(batches.filter((b) => b.longProse).length, 1);
+  const big = batches.find((b) => b.longProse)!;
+  assertEquals(big.units.map((u) => u.id), ["a.big.quest_desc"]);
+  assertEquals(big.chapter, "Alpha");
+  // The rest of Alpha stays together; Beta is untouched.
+  const alpha = batches.filter((b) => b.chapter === "Alpha" && !b.longProse);
+  assertEquals(alpha.flatMap((b) => b.units.map((u) => u.id)), ["a.title", "a2.title"]);
+  assertEquals(batches.filter((b) => b.chapter === "Beta").length, 1);
+});
