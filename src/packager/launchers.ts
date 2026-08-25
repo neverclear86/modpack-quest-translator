@@ -50,6 +50,11 @@ export function windowsLauncher(command: LauncherCommand): string {
     '  set /p "MQT_INSTANCE=> "',
     ")",
     "",
+    ":: A path ending in a backslash would escape the closing quote below, and the",
+    ":: installer would be handed the rest of the line along with it. A trailing dot",
+    ":: resolves to the same directory and needs no special case for a drive root.",
+    'if "%MQT_INSTANCE:~-1%"=="\\" set "MQT_INSTANCE=%MQT_INSTANCE%."',
+    "",
     `"%MQT_EXE%" ${command} --bundle "%MQT_BUNDLE%" --instance "%MQT_INSTANCE%"`,
     'set "MQT_CODE=%ERRORLEVEL%"',
     "",
@@ -103,7 +108,15 @@ if [ -z "$INSTANCE" ]; then
   printf '%s\\n' "Minecraft のインスタンスのフォルダーのパスを入力してください。"
   printf '%s\\n' "Enter the path to your Minecraft instance folder."
   printf '> '
-  read -r INSTANCE
+  # A closed stdin is a cancellation, not a crash: under set -e the failing
+  # read would otherwise kill this script with status 1 and say nothing.
+  read -r INSTANCE || true
+fi
+
+if [ -z "$INSTANCE" ]; then
+  printf '%s\\n' "中止しました。何も変更していません。"
+  printf '%s\\n' "Cancelled. Nothing was changed."
+  exit 0
 fi
 
 # The installer is compiled without --allow-env, so it cannot expand ~ itself.

@@ -406,6 +406,14 @@ async function main(): Promise<void> {
   );
   await Deno.rename(movedBackups, `${instance}/.mqt-installer/backups`);
 
+  const cancelled = await run(`${bundleDir}/INSTALL-LINUX.sh`, []);
+  check(
+    "a prompt with nothing on stdin is a cancellation, not a crash",
+    cancelled.code === 0 && cancelled.stdout.includes("Cancelled") &&
+      await Deno.readTextFile(`${instance}/${target}`) === payloadText,
+    cancelled.stdout.trim().split("\n").pop(),
+  );
+
   // ---- uninstall ----------------------------------------------------------
   console.log("\nuninstalling via ./UNINSTALL-LINUX.sh, answering the prompt on stdin...");
   await run(`${bundleDir}/UNINSTALL-LINUX.sh`, [], { stdin: `${instance}\n` });

@@ -116,3 +116,36 @@ Deno.test("a leading flag is passed through rather than taken as the instance", 
   assertStringIncludes(text, "-*)");
   assertStringIncludes(text, 'exec "$EXE" uninstall');
 });
+
+Deno.test("a trailing backslash cannot escape the closing quote around the path", () => {
+  // `--instance "D:\Games\ACA\"` is not the path it looks like: Windows argv
+  // parsing reads the \" as an escaped quote, so the installer would be handed
+  // `D:\Games\ACA"` and everything after it. Appending a `.` costs nothing,
+  // needs no special case for `C:\`, and resolves to the same directory.
+  for (const command of ["install", "uninstall"] as const) {
+    const text = windowsLauncher(command);
+    assertStringIncludes(text, 'if "%MQT_INSTANCE:~-1%"=="\\" set "MQT_INSTANCE=%MQT_INSTANCE%."');
+    assert(
+      text.indexOf('set "MQT_INSTANCE=%MQT_INSTANCE%."') <
+        text.indexOf(`"%MQT_EXE%" ${command} --bundle`),
+      "the fix-up has to happen before the installer is invoked",
+    );
+    assert(
+      text.indexOf("set /p") < text.indexOf('set "MQT_INSTANCE=%MQT_INSTANCE%."'),
+      "a typed path needs the same fix-up as a dropped one",
+    );
+  }
+});
+
+Deno.test("the shell launcher treats a closed or empty prompt as a cancellation", () => {
+  // `set -eu` turns a `read` that hits EOF into a silent exit 1. A player who
+  // closed the window, or pressed Enter, cancelled -- which is exit 0 and a
+  // sentence saying nothing was changed, exactly as the installer itself does.
+  const text = linuxLauncher("install");
+  assertStringIncludes(text, "read -r INSTANCE || true");
+  assertStringIncludes(text, "Cancelled. Nothing was changed.");
+  assert(
+    text.indexOf("Cancelled. Nothing was changed.") < text.indexOf('exec "$EXE"'),
+    "the cancellation has to short-circuit before the installer runs",
+  );
+});
