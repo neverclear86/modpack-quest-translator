@@ -55,8 +55,14 @@ per platform, and the launchers are a plain `.cmd` and a POSIX `sh` script.
 
 ### 2.3 Explicit non-goals
 
-- **Not** defended against: a hostile process with write access to the instance racing the
-  installer, OS-level ACL misconfiguration, or a compromised machine.
+- **Ordinary concurrent writers are handled; a hostile one is not.** Minecraft, a sync client, an
+  editor or the modpack's own updater rewriting `en_us.snbt` mid-run is caught: the target is proved
+  unchanged again after the backup is captured, before the replacement, and once more immediately
+  before the rename that publishes it, and a change aborts with `E_TARGET_MODIFIED` and the newer
+  bytes still in place (§6.2). What that cannot do is close the window between the last check and
+  the `rename`/`unlink` syscall itself — POSIX has no atomic compare-and-swap on a path, and neither
+  does Windows. A process deliberately racing that window, OS-level ACL misconfiguration, and a
+  compromised machine all remain out of scope.
 - The executables are **unsigned**. Windows SmartScreen will show "Windows protected your PC" on
   first run; the bundle README says so in Japanese and English and explains _More info → Run
   anyway_. Code signing needs a certificate the project does not have.
@@ -451,6 +457,34 @@ So the claim is: on Linux, the backup **and the entry naming it** are both on th
 original is replaced. On Windows it is the backup's _contents_ plus a rename that has returned, with
 NTFS's own journalling behind it. No more than that is claimed.
 
+### 6.2 The target is re-proved at every destructive boundary
+
+The plan is built from **one** read per target. Capturing a backup, hashing it and flushing it all
+take time, and the file is not locked while they happen — so between the read that classified it and
+the rename that replaces it, the file can have become something else entirely.
+
+The target is therefore re-read and re-hashed, and its whole path re-walked, at each boundary:
+
+1. after the backup is captured,
+2. before the replacement,
+3. inside the atomic write, after the temp file is durable and immediately before the `rename`.
+
+Any difference — different bytes, a file that appeared where there was none, one that vanished, or a
+parent directory that has become a symbolic link since the plan was made — aborts the run.
+`E_TARGET_MODIFIED` (or `E_INSTANCE` for the symlink), nothing overwritten, the newer bytes still
+there. Re-walking rather than reusing the resolved path is what makes the symlink case work: the
+containment guarantee is re-established, not remembered.
+
+`--force` does not weaken this. `--force` means "the file I installed was edited and I accept losing
+that edit", decided by a human looking at an error message. It does not mean "overwrite whatever
+turns up in the next fifty milliseconds".
+
+**The residual window is the syscall itself.** Between check (3) and the `rename` — or between the
+check and the `unlink` when a restore means deleting — there is no way to make the pair atomic on
+either platform. That window is microseconds wide, and it is what §2.3 declines to defend. What is
+closed is the realistic one: the seconds-wide window an editor, a sync client or a modpack updater
+actually writes in.
+
 **Instance-root convenience:** if the given directory has no `mods/`+`config/` but its child
 `.minecraft/` or `minecraft/` does, that child is used and the resolution is printed. This covers
 Prism/MultiMC instance folders, which is where drag-and-drop actually lands. Anything deeper is not
@@ -487,6 +521,13 @@ load state.json, then reconcile the backup inventory from backups/*.json sidecar
 
 **Restore is atomic**: backup bytes → temp file in the target's directory → `sync` → `rename` over
 the target. A crash mid-restore leaves either the old file or the new one, never a truncated one.
+
+**All-or-nothing survives past planning.** Every target is planned and refused before a byte moves,
+but a _write_ can still fail at run time on the second of two files. When it does, the targets
+already changed are put back to what this run found — checked first, so a third party's later write
+is not clobbered in the name of tidying up — and the error names each one and whether it could be
+undone. `state.json` is rewritten only after every target has succeeded, so a failed run leaves the
+install exactly as on the books as it was, and re-running finishes the job. `install` does the same.
 
 **Backups are retained after restore.** Nothing in `backups/` is ever deleted by the installer;
 uninstall only appends to `history`. Removing the translation twice in a row is therefore safe, and

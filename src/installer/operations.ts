@@ -26,7 +26,18 @@ export interface OperationContext {
    * finding one.
    */
   durability?: Durability;
+  /**
+   * Awaited immediately before each destructive step, and nowhere else.
+   *
+   * This is the only way to put another process's write inside the window the
+   * revalidation guards on purpose rather than by luck. Nothing passes it in
+   * production, so nothing calls it.
+   */
+  interlude?: (stage: InterludeStage, target: string) => Promise<void>;
 }
+
+/** The destructive boundaries, in the order a run reaches them. */
+export type InterludeStage = "after-capture" | "before-replace" | "before-rename";
 
 export type InstallStatus =
   /** The payload replaced something else, or landed where nothing was. */
@@ -286,6 +297,98 @@ async function firstVerified(
   return { failures };
 }
 
+/**
+ * Prove the target is still exactly what the plan was made for.
+ *
+ * The plan is built from one read per target; capturing a backup, hashing it
+ * and flushing it all take time, and the file is not locked. Minecraft, a sync
+ * client, an editor or the modpack's own updater can rewrite `en_us.snbt` in
+ * that window, and writing the payload over it would lose whatever it now says.
+ *
+ * Re-resolving rather than reusing the planned path is deliberate: it re-walks
+ * every component, so a parent directory swapped for a symbolic link since the
+ * plan was made is refused here rather than followed.
+ */
+async function assertUnchanged(
+  session: Session,
+  relativePath: string,
+  expected: string | null,
+): Promise<ResolvedTarget> {
+  const target = await resolveTargetPath(session.instance.root, relativePath, { os: session.os });
+  const current = await readIfPresent(target.path);
+  const actual = current === null ? null : await sha256Hex(current);
+  if (actual === expected) return target;
+
+  throw new AppError(
+    "E_TARGET_MODIFIED",
+    actual === null
+      ? `${target.path} was deleted while the installer was working`
+      : `${target.path} changed while the installer was working`,
+    {
+      hint: "Nothing was overwritten -- the newer file is still there. Close Minecraft and any " +
+        "editor or sync client holding the file, then run the command again.",
+      details: { target: relativePath },
+    },
+  );
+}
+
+/**
+ * One target's worth of undo: what it held before this run changed it.
+ *
+ * Planning refuses across all targets before a single byte is written, but a
+ * write can still fail at run time on the second of two files. Restoring the
+ * first is what keeps "all or nothing" true past the planning stage.
+ */
+interface AppliedChange {
+  relativePath: string;
+  path: string;
+  /** The bytes that were there before, or null when there was no file. */
+  previous: Uint8Array | null;
+  /** The digest this run left behind, so a third party's write is not clobbered. */
+  wrote: string | null;
+}
+
+async function rollBack(
+  session: Session,
+  applied: readonly AppliedChange[],
+  failure: unknown,
+): Promise<never> {
+  const notes: string[] = [];
+  for (const change of [...applied].reverse()) {
+    try {
+      // If something else has changed it again since, leave it alone: undoing
+      // our write would destroy theirs.
+      await assertUnchanged(session, change.relativePath, change.wrote);
+      if (change.previous === null) {
+        await Deno.remove(change.path);
+      } else {
+        await writeFileAtomic(change.path, change.previous, {
+          durability: session.durability,
+        });
+      }
+      notes.push(`${change.relativePath}: put back`);
+    } catch (cause) {
+      notes.push(
+        `${change.relativePath}: could NOT be put back ` +
+          `(${cause instanceof Error ? cause.message : String(cause)})`,
+      );
+    }
+  }
+
+  const message = failure instanceof Error ? failure.message : String(failure);
+  const code = failure instanceof AppError ? failure.code : "E_WRITE";
+  throw new AppError(
+    code,
+    notes.length === 0 ? message : `${message}\n${notes.map((n) => `  - ${n}`).join("\n")}`,
+    {
+      hint: failure instanceof AppError && failure.hint
+        ? failure.hint
+        : "Nothing was recorded, so running the command again is safe.",
+      cause: failure,
+    },
+  );
+}
+
 interface Classified {
   entryIndex: number;
   target: ResolvedTarget;
@@ -339,29 +442,51 @@ export async function install(context: OperationContext): Promise<InstallResult>
   }
 
   const targets: InstallTargetOutcome[] = [];
+  const applied: AppliedChange[] = [];
   for (const step of plan) {
     const entry = bundle.payload[step.entryIndex];
     let backup: BackupSummary | undefined;
 
-    if (step.capture) {
-      const record = await session.store.capture({
-        relativePath: entry.path,
-        bytes: step.capture === "absent" ? null : step.current,
-        kind: step.capture,
-        capturedAt: context.now().toISOString(),
-      });
-      backup = {
-        relativePath: record.relativePath,
-        kind: record.sidecar.kind,
-        reused: record.reused,
-      };
-      if (step.capture !== "modified-install") step.preserved = record;
-    }
+    try {
+      if (step.capture) {
+        const record = await session.store.capture({
+          relativePath: entry.path,
+          bytes: step.capture === "absent" ? null : step.current,
+          kind: step.capture,
+          capturedAt: context.now().toISOString(),
+        });
+        backup = {
+          relativePath: record.relativePath,
+          kind: record.sidecar.kind,
+          reused: record.reused,
+        };
+        if (step.capture !== "modified-install") step.preserved = record;
 
-    if (step.status !== "already-installed") {
-      await writeFileAtomic(step.target.path, entry.bytes, {
-        durability: session.durability,
-      });
+        // Capturing, hashing and flushing a backup takes time, and the file is
+        // not locked while it happens.
+        await context.interlude?.("after-capture", entry.path);
+        await assertUnchanged(session, entry.path, step.currentSha256);
+      }
+
+      if (step.status !== "already-installed") {
+        await context.interlude?.("before-replace", entry.path);
+        const target = await assertUnchanged(session, entry.path, step.currentSha256);
+        await writeFileAtomic(target.path, entry.bytes, {
+          durability: session.durability,
+          beforeRename: async () => {
+            await context.interlude?.("before-rename", entry.path);
+            await assertUnchanged(session, entry.path, step.currentSha256);
+          },
+        });
+        applied.push({
+          relativePath: entry.path,
+          path: target.path,
+          previous: step.current,
+          wrote: entry.sha256,
+        });
+      }
+    } catch (failure) {
+      await rollBack(session, applied, failure);
     }
 
     const originalBackup = step.capture === "original" || step.capture === "absent"
@@ -517,6 +642,8 @@ interface Restoration {
   relativePath: string;
   target: ResolvedTarget;
   current: Uint8Array | null;
+  /** What the plan was made for; re-proved before anything is written. */
+  currentSha256: string | null;
   /** True when the file was edited after we installed it; --force keeps it. */
   modified: boolean;
   backup: BackupRecord;
@@ -543,31 +670,62 @@ export async function uninstall(context: OperationContext): Promise<UninstallRes
   }
 
   const targets: UninstallTargetOutcome[] = [];
+  const applied: AppliedChange[] = [];
+  const restoredSha256 = new Map<string, string>();
   for (const step of plan) {
     let keptModifiedAs: string | undefined;
-    if (step.modified) {
-      const kept = await session.store.capture({
-        relativePath: step.relativePath,
-        bytes: step.current,
-        kind: "modified-install",
-        capturedAt: context.now().toISOString(),
-      });
-      keptModifiedAs = kept.relativePath;
-    }
-
     const deleted = step.backup.sidecar.kind === "absent";
-    if (deleted) {
-      if (step.current !== null) {
-        try {
-          await Deno.remove(step.target.path);
-        } catch (cause) {
-          throw new AppError("E_WRITE", `Could not remove ${step.target.path}`, { cause });
-        }
+    try {
+      if (step.modified) {
+        const kept = await session.store.capture({
+          relativePath: step.relativePath,
+          bytes: step.current,
+          kind: "modified-install",
+          capturedAt: context.now().toISOString(),
+        });
+        keptModifiedAs = kept.relativePath;
+
+        await context.interlude?.("after-capture", step.relativePath);
+        await assertUnchanged(session, step.relativePath, step.currentSha256);
       }
-    } else {
-      await writeFileAtomic(step.target.path, step.bytes, {
-        durability: session.durability,
-      });
+
+      await context.interlude?.("before-replace", step.relativePath);
+      const target = await assertUnchanged(session, step.relativePath, step.currentSha256);
+
+      if (deleted) {
+        if (step.current !== null) {
+          try {
+            await Deno.remove(target.path);
+          } catch (cause) {
+            throw new AppError("E_WRITE", `Could not remove ${target.path}`, { cause });
+          }
+          applied.push({
+            relativePath: step.relativePath,
+            path: target.path,
+            previous: step.current,
+            wrote: null,
+          });
+        }
+      } else {
+        const digest = restoredSha256.get(step.relativePath) ??
+          await sha256Hex(step.bytes);
+        restoredSha256.set(step.relativePath, digest);
+        await writeFileAtomic(target.path, step.bytes, {
+          durability: session.durability,
+          beforeRename: async () => {
+            await context.interlude?.("before-rename", step.relativePath);
+            await assertUnchanged(session, step.relativePath, step.currentSha256);
+          },
+        });
+        applied.push({
+          relativePath: step.relativePath,
+          path: target.path,
+          previous: step.current,
+          wrote: digest,
+        });
+      }
+    } catch (failure) {
+      await rollBack(session, applied, failure);
     }
 
     targets.push({
@@ -660,6 +818,7 @@ async function planRestore(
     relativePath: entry.path,
     target,
     current,
+    currentSha256,
     modified,
     backup: chosen.record,
     bytes: chosen.bytes,
