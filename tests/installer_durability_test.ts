@@ -182,3 +182,79 @@ Deno.test("a file flush failure is an error on both platforms", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+/**
+ * The reviewer's sequence: a run that fails at the sidecar's flush, then a
+ * re-run that finds the backup it left behind.
+ *
+ * The first run stops before the target is touched, which is right. What it
+ * leaves on disk is a backup and a sidecar whose bytes reached the page cache
+ * and nothing further. The second run verifies that backup by reading it --
+ * through the same page cache -- finds it perfect, and reuses it. Reuse without
+ * a fresh flush is the whole of the problem: the target gets replaced while its
+ * only other copy is still one power cut away from never having existed.
+ *
+ * So every reused backup is re-established before it is trusted: its bytes, its
+ * sidecar and the directory entries that name them.
+ */
+/** A run that gets the backup onto disk and then refuses to flush its sidecar. */
+function leavesAnUnflushedBackup(): Recorder {
+  return recording((kind, name) => kind === "file" && name.endsWith(".bak.json"));
+}
+
+Deno.test("a backup left unflushed by a failed run is re-synced before it is reused", async () => {
+  await withFixture(async (fixture) => {
+    const first = leavesAnUnflushedBackup();
+    const failed = await assertRejects(() => install(context(fixture, first)), AppError);
+    assertEquals(failed.code, "E_BACKUP");
+    assertEquals(await fixture.read(), ENGLISH);
+    assertEquals(first.log.includes("dir:backups"), false, "the directory was flushed anyway");
+
+    // The second run finds the target still holding the original and a verified
+    // backup of exactly those bytes, so it captures nothing new and adopts the
+    // one that is there. That is the path the flush has to reach.
+    const second = recording();
+    const result = await install(context(fixture, second));
+    assertEquals(result.targets[0].backup, undefined, "the second run captured a fresh backup");
+    assertEquals(await fixture.read(), JAPANESE);
+
+    const log = second.log;
+    const backup = log.findIndex((entry) => entry.startsWith("file:") && entry.endsWith(".bak"));
+    const sidecar = log.findIndex((entry) => entry.endsWith(".bak.json"));
+    const backupsDir = log.indexOf("dir:backups");
+    const langDir = log.indexOf("dir:lang");
+
+    assertEquals(backup >= 0, true, `the reused backup was never re-flushed: ${log}`);
+    assertEquals(sidecar >= 0, true, `the reused sidecar was never re-flushed: ${log}`);
+    assertEquals(
+      backupsDir > backup && backupsDir > sidecar,
+      true,
+      `backups/ was flushed before the files it names: ${log}`,
+    );
+    assertEquals(langDir > backupsDir, true, `the target was replaced too early: ${log}`);
+  });
+});
+
+Deno.test("a reused backup that still cannot be flushed never reaches the target", async () => {
+  await withFixture(async (fixture) => {
+    const first = leavesAnUnflushedBackup();
+    await assertRejects(() => install(context(fixture, first)), AppError);
+
+    const second = leavesAnUnflushedBackup();
+    const error = await assertRejects(() => install(context(fixture, second)), AppError);
+    assertEquals(error.code, "E_BACKUP");
+    assertEquals(await fixture.read(), ENGLISH);
+  });
+});
+
+Deno.test("a reused backup whose directory cannot be flushed never reaches the target", async () => {
+  await withFixture(async (fixture) => {
+    const first = leavesAnUnflushedBackup();
+    await assertRejects(() => install(context(fixture, first)), AppError);
+
+    const second = recording((kind, name) => kind === "dir" && name === "backups");
+    const error = await assertRejects(() => install(context(fixture, second)), AppError);
+    assertEquals(error.code, "E_BACKUP");
+    assertEquals(await fixture.read(), ENGLISH);
+  });
+});

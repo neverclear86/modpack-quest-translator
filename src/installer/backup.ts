@@ -170,6 +170,53 @@ export class BackupStore {
   }
 
   /**
+   * Push a backup that is already on disk past the page cache -- again.
+   *
+   * A backup `scan` finds may be what a run left behind after getting as far as
+   * writing it and no further, including a run that stopped *because* a flush
+   * failed. Reading it back proves its bytes, not their durability: the read is
+   * served out of the very page cache the write landed in, so a file that has
+   * never touched the disk verifies perfectly.
+   *
+   * Since what happens next is replacing the only other copy of those bytes,
+   * reuse re-establishes them rather than assuming some earlier run did. Both
+   * files are re-opened and flushed, and so is the directory that names them.
+   * Any of those failing ends the run here, with the target untouched.
+   */
+  async reestablish(record: BackupRecord): Promise<void> {
+    const directory = await this.resolveBackupsDirectory();
+    for (const name of [record.name, `${record.name}.json`]) {
+      const path = await this.resolveBackupFile(name);
+      let file: Deno.FsFile;
+      try {
+        // Write access, though nothing is written and nothing is truncated:
+        // Windows will not flush a handle that does not have it.
+        file = await Deno.open(path, { read: true, write: true });
+      } catch (cause) {
+        throw backupError(
+          `The backup ${path} could not be re-opened to make sure it is on the disk, so it ` +
+            `cannot be reused. Nothing was changed.`,
+          BACKUP_HINT,
+          cause,
+        );
+      }
+      try {
+        await this.#durability.syncFile(file, path);
+      } catch (cause) {
+        throw backupError(
+          `The backup ${path} exists but could not be flushed to the disk, so it is not ` +
+            `guaranteed to survive a power cut. Nothing was changed.`,
+          BACKUP_HINT,
+          cause,
+        );
+      } finally {
+        file.close();
+      }
+    }
+    await this.#flushDirectory(directory);
+  }
+
+  /**
    * A directory whose new entries have to survive a power cut, because what
    * comes next is replacing the only other copy of the file just backed up.
    */
@@ -295,7 +342,9 @@ export class BackupStore {
    *
    * The reuse is what makes an interrupted run converge instead of accumulating
    * near-duplicates: a crash between capturing the backup and writing the
-   * payload leaves an orphan, and the next run finds it by digest.
+   * payload leaves an orphan, and the next run finds it by digest. A reused
+   * backup is re-established on the disk first -- see `#reestablish` -- because
+   * the run that left it there may be exactly the run a flush failure stopped.
    */
   async capture(args: CaptureArgs): Promise<BackupRecord> {
     const relativePath = assertPayloadPath(args.relativePath);
@@ -308,7 +357,10 @@ export class BackupStore {
       record.sidecar.kind === args.kind &&
       record.sidecar.sha256 === sha256
     );
-    if (existing && (await this.verify(existing)).ok) return { ...existing, reused: true };
+    if (existing && (await this.verify(existing)).ok) {
+      await this.reestablish(existing);
+      return { ...existing, reused: true };
+    }
 
     const sidecar: BackupSidecar = {
       formatVersion: BACKUP_FORMAT_VERSION,

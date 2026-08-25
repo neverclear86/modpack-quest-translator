@@ -514,6 +514,14 @@ export async function install(context: OperationContext): Promise<InstallResult>
         // not locked while it happens.
         await context.interlude?.("after-capture", entry.path);
         await assertUnchanged(session, entry.path, step.currentSha256);
+      } else if (step.preserved && step.status !== "already-installed") {
+        // Nothing to capture, because this run is finishing or upgrading an
+        // install whose original is already sitting in `backups/`. Sitting in
+        // `backups/` is not the same as being on the disk: the run that put it
+        // there may be the very run a failed flush stopped. It is about to
+        // become the only copy of the pack's own file, so it is re-established
+        // exactly as a freshly captured one would be.
+        await session.store.reestablish(step.preserved);
       }
 
       if (step.status !== "already-installed") {
