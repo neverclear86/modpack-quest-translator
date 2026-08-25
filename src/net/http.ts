@@ -88,7 +88,9 @@ export class BoundedHttpClient {
       () => deadline.abort(new DOMException("Timed out", "TimeoutError")),
       this.#timeoutMs,
     );
-    const signal = options.signal ? anySignal([options.signal, deadline.signal]) : deadline.signal;
+    const signal = options.signal
+      ? AbortSignal.any([options.signal, deadline.signal])
+      : deadline.signal;
     try {
       const response = await this.#request(url, options, signal);
       return await this.#readBody(response, options, url, signal);
@@ -245,17 +247,4 @@ export class BoundedHttpClient {
 
 function isRedirect(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
-}
-
-/** Deno 1.41 has no AbortSignal.any. */
-function anySignal(signals: AbortSignal[]): AbortSignal {
-  const controller = new AbortController();
-  for (const signal of signals) {
-    if (signal.aborted) {
-      controller.abort(signal.reason);
-      break;
-    }
-    signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
-  }
-  return controller.signal;
 }

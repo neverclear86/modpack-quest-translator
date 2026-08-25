@@ -51,8 +51,8 @@ export class DenoCommandRunner implements CommandRunner {
       throw cause;
     }
 
-    let timer: number | undefined;
-    let escalation: number | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let escalation: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
     const kill = (signal: Deno.Signal) => {
       try {

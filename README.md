@@ -27,9 +27,8 @@ mod JARs, pack assets or credentials are ever placed in the output.
 
 ## Requirements
 
-- [Deno](https://deno.com/) 1.41 or newer — only to build or run from source. Both majors are
-  supported and verified: `1.41.1`, `1.46.3` and `2.5.6`. The compiled binary has no runtime
-  dependencies.
+- [Deno](https://deno.com/) 2 — only to build or run from source; verified on `2.9.5`. Deno 1 is not
+  supported. The compiled binaries have no runtime dependencies.
 - [Claude Code](https://claude.com/claude-code), already installed and logged in, for the default
   translation provider. The tool drives the `claude` CLI as a subprocess; it never calls Anthropic
   HTTP APIs directly and never runs `claude update`.

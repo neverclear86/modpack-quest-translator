@@ -48,18 +48,3 @@ Deno.test("writeFileAtomic writes exactly the bytes of a view", async () => {
     await Deno.remove(dir, { recursive: true });
   }
 });
-
-Deno.test("the durability flush works on every supported Deno major", async () => {
-  // Deno 1.41 gates FsFile.sync behind --unstable-fs and *aborts the process*
-  // when it is called without it, so an unguarded call does not surface as a
-  // failed assertion here -- it takes the whole test runner down.
-  const dir = await Deno.makeTempDir({ prefix: "mqt-sync-" });
-  try {
-    for (let i = 0; i < 3; i++) {
-      await writeFileAtomic(`${dir}/f${i}.txt`, `contents ${i}`);
-      assertEquals(await Deno.readTextFile(`${dir}/f${i}.txt`), `contents ${i}`);
-    }
-  } finally {
-    await Deno.remove(dir, { recursive: true });
-  }
-});

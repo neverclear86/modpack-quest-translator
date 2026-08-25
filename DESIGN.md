@@ -12,15 +12,13 @@ verbatim.
 
 ## 1. Runtime and dependency policy
 
-- **Deno + TypeScript**, as mandated. One source tree runs on both supported majors; fmt, lint,
-  check and the full suite are verified on `deno 1.41.1`, `1.46.3` and `2.5.6`, and the binary is
-  compiled and smoke-tested with Deno 2.
-  - The two majors disagree on two APIs. `Deno.fsync` was removed in Deno 2 in favour of
-    `FsFile.sync`, which Deno 1.41 has but gates behind `--unstable-fs` -- and a gated call _aborts
-    the process_ rather than throwing, so it cannot be attempted speculatively; `util/fs.ts` picks
-    by feature-testing `Deno.fsync`. Deno 2's TypeScript also makes `Uint8Array` generic over its
-    backing store, so it no longer satisfies `BufferSource`, `BlobPart` or `BodyInit`;
-    `util/bytes.ts` holds the single cast that reconciles them.
+- **Deno + TypeScript**, as mandated. **Deno 2 only**: fmt, lint, check, the full suite, both
+  compiled binaries and the packaged installer bundle are verified on `deno 2.9.5`. Deno 1 is not
+  supported and not tested, and the feature-detection branches that used to keep one source tree
+  compiling on both majors have been deleted -- `FsFile.sync` and `AbortSignal.any` are called
+  directly. Deno 2's TypeScript makes `Uint8Array` generic over its backing store, so it no longer
+  satisfies `BufferSource` or `BlobPart`; `util/bytes.ts` holds the single cast that reconciles
+  them.
 - **Zero third-party runtime dependencies.** Only `https://deno.land/std@0.219.0` is used, and only
   inside tests (`assert`) plus `path`/`fs` helpers.
   - Rationale: `deno compile` must produce a standalone binary; the security requirements (Zip Slip,
@@ -28,8 +26,7 @@ verbatim.
     handling, which off-the-shelf ZIP libraries do not give. Deno ships
     `CompressionStream("deflate-raw")` and `DecompressionStream("deflate-raw")` natively, so a
     purpose-built ZIP reader/writer is both feasible and safer than a dependency.
-  - Deno 1.41.1 predates JSR, so all remote specifiers are `https://deno.land/std@…` pinned in
-    `deno.json` `imports`.
+  - All remote specifiers are `https://deno.land/std@…` pinned in `deno.json` `imports`.
 
 ## 2. Layered architecture
 
