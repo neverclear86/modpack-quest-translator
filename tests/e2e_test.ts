@@ -475,3 +475,52 @@ Deno.test("a malicious archive is refused before anything is written", async () 
     await assertRejects(() => Deno.stat(`${h.dir}/out.zip`));
   });
 });
+
+Deno.test("a local archive takes its pack name and version from the pack, not the file name", async () => {
+  // Regression: the file-name stem of `pack.mrpack` was winning over the real
+  // version in modrinth.index.json, so the output was named `...-pack-ja_jp.zip`
+  // instead of carrying the exact compatible pack version.
+  await harness(async (h) => {
+    const path = `${h.dir}/pack.mrpack`;
+    await Deno.writeFile(path, await packBytes());
+    const code = await run([
+      "--archive",
+      path,
+      "--target",
+      "ja_jp",
+      "--output",
+      h.dir,
+      "--provider",
+      "echo",
+      "--cache-dir",
+      h.cacheDir,
+    ], deps(h));
+    assertEquals(code, 0, h.stderr.join("\n"));
+    await Deno.stat(`${h.dir}/rubius-cobblemon-0.9-ja_jp.zip`);
+  });
+});
+
+Deno.test("a resolver-reported version still wins over the in-archive manifest", async () => {
+  // Modrinth/CurseForge know the released version authoritatively; the archive's
+  // own manifest can lag behind it.
+  await harness(async (h) => {
+    const code = await run([
+      "--url",
+      "https://modrinth.com/modpack/rubius-cobblemon",
+      "--target",
+      "ja_jp",
+      "--output",
+      h.dir,
+      "--provider",
+      "echo",
+      "--cache-dir",
+      h.cacheDir,
+    ], deps(h));
+    assertEquals(code, 0, h.stderr.join("\n"));
+    const manifest = JSON.parse(
+      await Deno.readTextFile(`${h.dir}/rubius-cobblemon-0.9-ja_jp.manifest.json`),
+    );
+    assertEquals(manifest.pack.version, "0.9");
+    assertEquals(manifest.pack.name, "Rubius Cobblemon");
+  });
+});

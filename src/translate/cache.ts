@@ -56,6 +56,8 @@ export class TranslationCache {
   readonly #entries: Map<string, CacheEntry>;
   readonly #enabled: boolean;
   #dirty = false;
+  /** Serialises flushes so two in-flight writes cannot land out of order. */
+  #flushing: Promise<void> = Promise.resolve();
   #hits = 0;
   #misses = 0;
   #stores = 0;
@@ -120,16 +122,40 @@ export class TranslationCache {
     this.#dirty = true;
   }
 
-  /** Persist atomically. Called after every batch so Ctrl+C is always safe. */
-  async flush(): Promise<void> {
-    if (!this.#enabled || !this.#dirty) return;
-    const file: CacheFile = {
-      version: 1,
-      key: this.#key,
-      entries: Object.fromEntries([...this.#entries].sort(([a], [b]) => (a < b ? -1 : 1))),
-    };
-    await writeFileAtomic(this.#path, `${JSON.stringify(file, null, 2)}\n`);
-    this.#dirty = false;
+  /**
+   * Persist atomically. Called after every batch so Ctrl+C is always safe.
+   *
+   * Two things matter here and both were once wrong:
+   *  - the dirty flag is cleared *before* the snapshot, so a set() that lands
+   *    while the write is in flight re-dirties the cache and is picked up by the
+   *    next flush instead of being marked clean and dropped;
+   *  - flushes are chained, so two concurrent workers cannot rename an older,
+   *    smaller snapshot over a newer one.
+   */
+  flush(): Promise<void> {
+    if (!this.#enabled) return Promise.resolve();
+    const previous = this.#flushing;
+    this.#flushing = (async () => {
+      await previous.catch(() => {});
+      if (!this.#dirty) return;
+      // Clear first, snapshot second: both are synchronous, so nothing can slip
+      // in between, and anything added later re-dirties for the next flush.
+      this.#dirty = false;
+      const file: CacheFile = {
+        version: 1,
+        key: this.#key,
+        entries: Object.fromEntries([...this.#entries].sort(([a], [b]) => (a < b ? -1 : 1))),
+      };
+      const payload = `${JSON.stringify(file, null, 2)}\n`;
+      try {
+        await writeFileAtomic(this.#path, payload);
+      } catch (error) {
+        // A failed write must not leave the cache believing it is persisted.
+        this.#dirty = true;
+        throw error;
+      }
+    })();
+    return this.#flushing;
   }
 
   stats(): CacheStats {

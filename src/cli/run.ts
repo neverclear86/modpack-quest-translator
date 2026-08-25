@@ -213,12 +213,20 @@ async function execute(
     ? "instance"
     : options.layout;
 
+  // A registry knows the released name and version authoritatively. For a
+  // direct URL or a local file the "version" is only a file-name stem, so the
+  // pack's own manifest is the better source and must win.
+  const registryAuthoritative = pack.source === "curseforge" || pack.source === "modrinth";
+
   const meta: OverlayMeta = {
     toolVersion: VERSION,
     generatedAt: now().toISOString(),
     sourceUrl: pack.sourceUrl,
-    packName: pack.projectName ?? source.packInfo.name,
-    packVersion: pack.versionName ?? source.packInfo.version,
+    packName: (registryAuthoritative ? pack.projectName : undefined) ?? source.packInfo.name ??
+      pack.projectName,
+    packVersion: (registryAuthoritative ? pack.versionName : undefined) ??
+      source.packInfo.version ??
+      pack.versionName,
     minecraftVersion: pack.minecraftVersion ?? source.packInfo.minecraftVersion,
     loader: pack.loader ?? source.packInfo.loader,
     sourceArchiveSha256,

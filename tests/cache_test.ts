@@ -160,3 +160,42 @@ Deno.test("the cache never stores anything that looks like a credential", async 
     }
   });
 });
+
+Deno.test("an entry stored while a flush is in flight is not lost", async () => {
+  // Regression: flush() cleared its dirty flag *after* awaiting the write, so a
+  // set() that landed during the write was marked clean and never persisted.
+  // Under --concurrency > 1 this silently dropped cache entries, which showed up
+  // as a string being re-translated on a resume that should have been a full hit.
+  await withTempDir(async (dir) => {
+    const cache = await TranslationCache.open(dir, KEY);
+    cache.set("First", "haiku", "1");
+    const inFlight = cache.flush();
+    cache.set("Second", "haiku", "2");
+    await inFlight;
+    await cache.flush();
+
+    const reopened = await TranslationCache.open(dir, KEY);
+    assertEquals(reopened.get("First", "haiku")?.text, "1");
+    assertEquals(reopened.get("Second", "haiku")?.text, "2");
+  });
+});
+
+Deno.test("concurrent flushes never drop an entry", async () => {
+  // Two orchestrator workers flush after their own batch. Interleaved renames
+  // must not let an earlier, smaller snapshot land last.
+  await withTempDir(async (dir) => {
+    const cache = await TranslationCache.open(dir, KEY);
+    const flushes: Promise<void>[] = [];
+    for (let i = 0; i < 25; i++) {
+      cache.set(`Source ${i}`, "haiku", `翻訳 ${i}`);
+      flushes.push(cache.flush());
+    }
+    await Promise.all(flushes);
+    await cache.flush();
+
+    const reopened = await TranslationCache.open(dir, KEY);
+    for (let i = 0; i < 25; i++) {
+      assertEquals(reopened.get(`Source ${i}`, "haiku")?.text, `翻訳 ${i}`, `entry ${i} was lost`);
+    }
+  });
+});
