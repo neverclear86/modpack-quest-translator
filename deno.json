@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "exports": "./src/cli/main.ts",
   "tasks": {
-    "check": "deno check src/cli/main.ts src/installer/main.ts",
+    "check": "deno check src/cli/main.ts src/installer/main.ts src/packager/main.ts",
     "test": "deno test -A",
     "fmt": "deno fmt",
     "lint": "deno lint",
@@ -11,6 +11,7 @@
     "build:installer:linux": "deno compile --allow-read --allow-write --target x86_64-unknown-linux-gnu --output dist/bin/mqt-installer-linux-x86_64 src/installer/main.ts",
     "build:installer:windows": "deno compile --allow-read --allow-write --target x86_64-pc-windows-msvc --output dist/bin/mqt-installer-windows-x86_64.exe src/installer/main.ts",
     "build:installers": "deno task build:installer:linux && deno task build:installer:windows",
+    "package-installer": "deno run --allow-read --allow-write src/packager/main.ts",
     "verify": "deno fmt --check && deno lint && deno task check && deno test -A"
   },
   "imports": {

@@ -243,3 +243,18 @@ Deno.test("the translation manifest and report travel with the bundle verbatim",
     );
   }
 });
+
+Deno.test("an overlay with no timestamp to inherit is refused, not stamped from the clock", async () => {
+  const overlay = await writeZip([{ path: LANG, text: JAPANESE }]);
+  const { generatedAt: _dropped, ...rest } = args(overlay);
+  const error = await assertRejects(() => buildInstallerBundle(rest), AppError);
+  assertEquals(error.code, "E_INVALID_INPUT");
+  assertStringIncludes(error.hint ?? "", "--generated-at");
+});
+
+Deno.test("--generated-at overrides the translation run's timestamp", async () => {
+  const built = await buildInstallerBundle(
+    args(await realOverlay("instance"), { generatedAt: "2027-01-02T03:04:05.000Z" }),
+  );
+  assertEquals(built.manifest.generatedAt, "2027-01-02T03:04:05.000Z");
+});

@@ -35,8 +35,12 @@ export interface PackageBundleArgs {
   overlay: Uint8Array;
   bundleId: string;
   toolVersion: string;
-  /** ISO-8601. Taken from the translation run, so packaging is repeatable. */
-  generatedAt: string;
+  /**
+   * ISO-8601 override. Left unset, it comes from the translation run's own
+   * manifest, which is what makes packaging the same overlay twice produce
+   * byte-identical output. There is deliberately no fallback to the clock.
+   */
+  generatedAt?: string;
   binaries: PackagedBinary[];
   /** Overrides for the sidecars, when they were given explicitly. */
   translationManifest?: string;
@@ -105,6 +109,17 @@ export async function buildInstallerBundle(args: PackageBundleArgs): Promise<Bui
     decode(metadata.get(TRANSLATION_MANIFEST_NAME));
   const translationReport = args.translationReport ?? decode(metadata.get(TRANSLATION_REPORT_NAME));
   const source = readTranslationManifest(translationManifest);
+  const generatedAt = args.generatedAt ?? source.generatedAt;
+  if (generatedAt === undefined) {
+    throw new AppError(
+      "E_INVALID_INPUT",
+      `The overlay has no ${TRANSLATION_MANIFEST_NAME} to take a timestamp from`,
+      {
+        hint: "Pass --generated-at <iso>, or --manifest pointing at the manifest the " +
+          "translation run wrote.",
+      },
+    );
+  }
 
   const payloadPaths = [...payloads.keys()].sort();
   const manifest: BundleManifest = {
@@ -112,7 +127,7 @@ export async function buildInstallerBundle(args: PackageBundleArgs): Promise<Bui
     bundleId: args.bundleId,
     tool: "modpack-quest-translator",
     toolVersion: args.toolVersion,
-    generatedAt: args.generatedAt,
+    generatedAt,
     pack: {
       ...(source.packName ? { name: source.packName } : {}),
       ...(source.packVersion ? { version: source.packVersion } : {}),
@@ -196,6 +211,7 @@ interface TranslationFacts {
   sourceLocale: string;
   targetLocale: string;
   overrideEnglish: boolean;
+  generatedAt?: string;
 }
 
 function readTranslationManifest(text: string | undefined): TranslationFacts {
@@ -225,6 +241,7 @@ function readTranslationManifest(text: string | undefined): TranslationFacts {
     sourceLocale: typeof body.sourceLocale === "string" ? body.sourceLocale : fallback.sourceLocale,
     targetLocale: typeof body.targetLocale === "string" ? body.targetLocale : fallback.targetLocale,
     overrideEnglish: body.overrideEnglish === true,
+    ...(typeof body.generatedAt === "string" ? { generatedAt: body.generatedAt } : {}),
   };
 }
 
