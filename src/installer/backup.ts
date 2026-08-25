@@ -2,6 +2,7 @@ import { AppError } from "../errors.ts";
 import { basenameOf } from "../util/fs.ts";
 import { sha256Hex } from "../util/hash.ts";
 import { assertPayloadPath } from "./bundle.ts";
+import { createDirectoryInsideRoot, resolveInsideRoot } from "./instance.ts";
 import { currentOs, joinNative, type OsKind } from "./paths.ts";
 
 /** Bumped only for a change an older installer could not read correctly. */
@@ -110,7 +111,10 @@ export class BackupStore {
     this.#bundleId = options.bundleId;
   }
 
-  /** `<instance>/.mqt-installer`. */
+  /**
+   * `<instance>/.mqt-installer`, as a path. Good enough to name in a message;
+   * not proof that it is safe to open. Use `resolveInstallerDirectory` for that.
+   */
   get installerDirectory(): string {
     return joinNative(this.#os, this.#root, INSTALLER_DIR);
   }
@@ -119,29 +123,85 @@ export class BackupStore {
     return joinNative(this.#os, this.installerDirectory, BACKUPS_DIR);
   }
 
-  /** Resolve a `backups/<name>.bak` reference from state.json. */
-  pathOf(relativePath: string): string {
-    return joinNative(this.#os, this.installerDirectory, ...relativePath.split("/"));
+  /**
+   * The same path, proven symlink-free and inside the instance, right now.
+   *
+   * Re-proved at each boundary rather than cached: the whole point of the check
+   * is that the directory could have been swapped since the last one.
+   */
+  async resolveInstallerDirectory(): Promise<string> {
+    return (await resolveInsideRoot(this.#root, [INSTALLER_DIR], {
+      os: this.#os,
+      expect: "directory",
+    })).path;
+  }
+
+  async resolveBackupsDirectory(): Promise<string> {
+    return (await resolveInsideRoot(this.#root, [INSTALLER_DIR, BACKUPS_DIR], {
+      os: this.#os,
+      expect: "directory",
+    })).path;
+  }
+
+  /**
+   * `backups/`, creating it and `.mqt-installer/` a level at a time.
+   *
+   * `mkdir --recursive` would walk straight through a symlinked
+   * `.mqt-installer`; this cannot.
+   */
+  async createBackupsDirectory(): Promise<string> {
+    return (await createDirectoryInsideRoot(this.#root, [INSTALLER_DIR, BACKUPS_DIR], {
+      os: this.#os,
+    })).path;
+  }
+
+  /** A backup or sidecar file, proven to be a real file inside `backups/`. */
+  async resolveBackupFile(name: string): Promise<string> {
+    assertBackupName(name);
+    return (await resolveInsideRoot(this.#root, [INSTALLER_DIR, BACKUPS_DIR, name], {
+      os: this.#os,
+      expect: "file",
+    })).path;
   }
 
   async scan(): Promise<BackupScan> {
     const records: BackupRecord[] = [];
     const skipped: { path: string; reason: string }[] = [];
 
+    const directory = await this.resolveBackupsDirectory();
     let names: string[];
     try {
       names = [];
-      for await (const entry of Deno.readDir(this.backupsDirectory)) {
-        if (entry.isFile && entry.name.endsWith(".bak.json")) names.push(entry.name);
+      for await (const entry of Deno.readDir(directory)) {
+        if (!entry.name.endsWith(".bak.json")) continue;
+        // readDir does not follow links, so a planted one shows up here rather
+        // than as a file we would go on to read through.
+        if (entry.isSymlink) {
+          skipped.push({
+            path: joinNative(this.#os, directory, entry.name),
+            reason: `${entry.name} is a symbolic link, which this installer will not follow`,
+          });
+          continue;
+        }
+        if (entry.isFile) names.push(entry.name);
       }
     } catch (cause) {
       if (cause instanceof Deno.errors.NotFound) return { records: [], skipped: [] };
-      throw backupError(`Could not read ${this.backupsDirectory}`, undefined, cause);
+      throw backupError(`Could not read ${directory}`, undefined, cause);
     }
     names.sort();
 
     for (const name of names) {
-      const sidecarPath = joinNative(this.#os, this.backupsDirectory, name);
+      let sidecarPath: string;
+      try {
+        sidecarPath = await this.resolveBackupFile(name);
+      } catch (error) {
+        skipped.push({
+          path: joinNative(this.#os, directory, name),
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
       let sidecar: BackupSidecar;
       try {
         sidecar = parseSidecar(await Deno.readTextFile(sidecarPath), sidecarPath);
@@ -156,7 +216,7 @@ export class BackupStore {
       records.push({
         name: backupName,
         relativePath: `${BACKUPS_DIR}/${backupName}`,
-        backupPath: joinNative(this.#os, this.backupsDirectory, backupName),
+        backupPath: joinNative(this.#os, directory, backupName),
         sidecarPath,
         sidecar,
         reused: false,
@@ -170,12 +230,18 @@ export class BackupStore {
     // An "absent" sentinel is a zero-byte file, so it verifies through exactly
     // the same size-and-digest path as a real backup rather than a special case.
     let bytes: Uint8Array;
+    let path: string;
     try {
-      bytes = await Deno.readFile(record.backupPath);
+      path = await this.resolveBackupFile(record.name);
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    }
+    try {
+      bytes = await Deno.readFile(path);
     } catch (cause) {
       const reason = cause instanceof Deno.errors.NotFound
-        ? `the backup file is missing: ${record.backupPath}`
-        : `the backup file could not be read: ${record.backupPath}`;
+        ? `the backup file is missing: ${path}`
+        : `the backup file could not be read: ${path}`;
       return { ok: false, reason };
     }
     if (bytes.byteLength !== record.sidecar.sizeBytes) {
@@ -224,13 +290,13 @@ export class BackupStore {
       capturedByBundleId: this.#bundleId,
     };
 
-    await Deno.mkdir(this.backupsDirectory, { recursive: true });
+    const directory = await this.createBackupsDirectory();
     const stem = `${basenameOf(relativePath)}.${compactTimestamp(args.capturedAt)}`;
     const suffix = sha256.slice(0, 12);
 
     for (let counter = 0; counter < 1000; counter++) {
       const name = `${stem}-${counter}.${suffix}.bak`;
-      const backupPath = joinNative(this.#os, this.backupsDirectory, name);
+      const backupPath = await this.resolveBackupFile(name);
       let file: Deno.FsFile;
       try {
         file = await Deno.open(backupPath, { write: true, createNew: true });
@@ -248,7 +314,7 @@ export class BackupStore {
         file.close();
       }
 
-      const sidecarPath = `${backupPath}.json`;
+      const sidecarPath = await this.resolveBackupFile(`${name}.json`);
       await writeSidecar(sidecarPath, sidecar);
       return {
         name,
@@ -262,8 +328,19 @@ export class BackupStore {
 
     throw backupError(
       `Could not find a free backup name for ${relativePath}`,
-      `Something is creating files in ${this.backupsDirectory} faster than they can be used.`,
+      `Something is creating files in ${directory} faster than they can be used.`,
     );
+  }
+}
+
+/**
+ * Every name the store puts on disk is generated from a payload basename, a
+ * timestamp and a digest, so this can never legitimately fail. It is checked
+ * anyway, because it is the last place a name could turn into a path.
+ */
+function assertBackupName(name: string): void {
+  if (name.length === 0 || name.length > 255 || !/^[A-Za-z0-9._-]+$/.test(name)) {
+    throw backupError(`${JSON.stringify(name)} is not a usable backup file name`);
   }
 }
 

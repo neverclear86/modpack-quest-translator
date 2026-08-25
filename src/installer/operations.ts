@@ -119,7 +119,7 @@ async function open(
     os,
   });
   const scan = await store.scan();
-  const loaded = await loadState(store.installerDirectory, os);
+  const loaded = await loadState(await store.resolveInstallerDirectory(), os);
   const warnings: string[] = [];
   if (loaded.warning) warnings.push(loaded.warning);
   for (const skipped of scan.skipped) {
@@ -380,7 +380,11 @@ export async function install(context: OperationContext): Promise<InstallResult>
     });
   }
 
-  await saveState(session.store.installerDirectory, session.state, session.os);
+  await saveState(
+    await session.store.resolveInstallerDirectory(),
+    session.state,
+    session.os,
+  );
 
   return {
     bundleId: bundle.manifest.bundleId,
@@ -567,7 +571,11 @@ export async function uninstall(context: OperationContext): Promise<UninstallRes
     delete session.state.installs[step.relativePath];
   }
 
-  await saveState(session.store.installerDirectory, session.state, session.os);
+  await saveState(
+    await session.store.resolveInstallerDirectory(),
+    session.state,
+    session.os,
+  );
 
   return {
     bundleId: bundle.manifest.bundleId,

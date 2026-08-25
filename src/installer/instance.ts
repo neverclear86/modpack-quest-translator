@@ -119,26 +119,49 @@ export interface ResolveTargetOptions {
   os?: OsKind;
 }
 
+export interface ResolvedInside {
+  /** The joined native path, whether or not anything is there yet. */
+  path: string;
+  /** Deepest directory on the way that already exists. */
+  existingAncestor: string;
+  /** What is at `path` right now, or undefined when nothing is. */
+  info?: Deno.FileInfo;
+}
+
+export interface ResolveInsideOptions {
+  os?: OsKind;
+  /** What the last component must be if it already exists. */
+  expect?: "file" | "directory";
+  /** Named in the error messages; defaults to the joined relative path. */
+  label?: string;
+}
+
 /**
- * Resolve a bundle-declared destination inside an instance root.
+ * Resolve a relative path inside an instance root, refusing to leave it.
  *
- * Every component between the root and the file is lstat-ed, so a symlink
+ * Every component between the root and the leaf is `lstat`-ed, so a symlink
  * planted anywhere along the way is refused rather than followed, and the
- * deepest component that does exist is realpath-ed and checked to still be
- * inside the root. `--force` deliberately has no effect here: forcing past a
- * symlink is how an installer writes outside the instance.
+ * deepest component that does exist is `realpath`-ed and checked to still be
+ * inside the root. `--force` deliberately has no effect: forcing past a symlink
+ * is how an installer writes outside the instance.
+ *
+ * Every path the installer reads or writes goes through this -- the quest
+ * target, `.mqt-installer/`, `backups/`, each backup and sidecar, `state.json`
+ * -- and goes through it again at each boundary rather than once per run, so a
+ * component swapped for a link mid-run is caught before the next write instead
+ * of after it.
  */
-export async function resolveTargetPath(
+export async function resolveInsideRoot(
   root: string,
-  relativePath: string,
-  options: ResolveTargetOptions = {},
-): Promise<ResolvedTarget> {
+  segments: readonly string[],
+  options: ResolveInsideOptions = {},
+): Promise<ResolvedInside> {
   const os = options.os ?? currentOs();
-  const safe = assertPayloadPath(relativePath);
-  const segments = safe.split("/");
+  const label = options.label ?? segments.join("/");
 
   let current = root;
   let existingAncestor = root;
+  let leaf: Deno.FileInfo | undefined;
   for (let i = 0; i < segments.length; i++) {
     current = joinNative(os, current, segments[i]);
     const isLast = i === segments.length - 1;
@@ -162,13 +185,20 @@ export async function resolveTargetPath(
     }
     if (!isLast && !info.isDirectory) {
       throw instanceError(
-        `${current} is not a directory, so ${safe} cannot exist inside this instance`,
+        `${current} is not a directory, so ${label} cannot exist inside this instance`,
       );
     }
-    if (isLast && info.isDirectory) {
-      throw instanceError(`${current} is a directory, but the bundle installs a file there`);
+    if (isLast) {
+      if (options.expect === "file" && info.isDirectory) {
+        throw instanceError(`${current} is a directory, but a file belongs there`);
+      }
+      if (options.expect === "directory" && !info.isDirectory) {
+        throw instanceError(`${current} is not a directory, but a directory belongs there`);
+      }
+      leaf = info;
+    } else {
+      existingAncestor = current;
     }
-    if (!isLast) existingAncestor = current;
   }
 
   // The components were symlink-free, so this can only fail if the root itself
@@ -177,9 +207,76 @@ export async function resolveTargetPath(
   const realAncestor = await Deno.realPath(existingAncestor);
   if (!isInsideRoot(root, realAncestor, os)) {
     throw instanceError(
-      `${safe} resolves to ${realAncestor}, which is outside the instance root ${root}`,
+      `${label} resolves to ${realAncestor}, which is outside the instance root ${root}`,
     );
   }
 
-  return { path: joinNative(os, root, ...segments), relativePath: safe, existingAncestor };
+  return {
+    path: joinNative(os, root, ...segments),
+    existingAncestor,
+    ...(leaf ? { info: leaf } : {}),
+  };
+}
+
+/**
+ * The same walk, creating the directories that are missing one level at a time.
+ *
+ * `mkdir --recursive` would happily walk through a symlinked `.mqt-installer`;
+ * creating each level explicitly and re-inspecting what turned up cannot. The
+ * created paths come back because a new directory entry is not durable until
+ * its *parent* has been flushed, and only the caller knows which parents that
+ * makes it responsible for.
+ */
+export async function createDirectoryInsideRoot(
+  root: string,
+  segments: readonly string[],
+  options: ResolveInsideOptions = {},
+): Promise<{ path: string; created: string[] }> {
+  const os = options.os ?? currentOs();
+  const created: string[] = [];
+  for (let i = 1; i <= segments.length; i++) {
+    const prefix = segments.slice(0, i);
+    const resolved = await resolveInsideRoot(root, prefix, {
+      ...options,
+      os,
+      expect: "directory",
+    });
+    if (resolved.info !== undefined) continue;
+    try {
+      await Deno.mkdir(resolved.path);
+      created.push(resolved.path);
+    } catch (cause) {
+      if (!(cause instanceof Deno.errors.AlreadyExists)) {
+        throw instanceError(`Could not create ${resolved.path}`, undefined, cause);
+      }
+    }
+    // Whatever turned up in the race is re-inspected rather than assumed.
+    await resolveInsideRoot(root, prefix, { ...options, os, expect: "directory" });
+  }
+  return { path: joinNative(os, root, ...segments), created };
+}
+
+/**
+ * Resolve a bundle-declared destination inside an instance root.
+ *
+ * The payload allowlist runs first, so only `config/ftbquests/quests/lang/
+ * <name>.snbt` ever reaches the filesystem walk.
+ */
+export async function resolveTargetPath(
+  root: string,
+  relativePath: string,
+  options: ResolveTargetOptions = {},
+): Promise<ResolvedTarget> {
+  const os = options.os ?? currentOs();
+  const safe = assertPayloadPath(relativePath);
+  const resolved = await resolveInsideRoot(root, safe.split("/"), {
+    os,
+    expect: "file",
+    label: safe,
+  });
+  return {
+    path: resolved.path,
+    relativePath: safe,
+    existingAncestor: resolved.existingAncestor,
+  };
 }

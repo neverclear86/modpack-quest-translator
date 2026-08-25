@@ -62,6 +62,33 @@ export function statePath(installerDirectory: string, os: OsKind = currentOs()):
 }
 
 /**
+ * `state.json` has to be a real file, or nothing.
+ *
+ * The directory it lives in is proven to be inside the instance by
+ * `BackupStore.resolveInstallerDirectory`; this is the leaf that walk does not
+ * cover, and a link planted here would have us reading -- and, on the next
+ * atomic rename, replacing -- a file somewhere else entirely.
+ */
+async function assertRealStateFile(path: string): Promise<void> {
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.lstat(path);
+  } catch (cause) {
+    if (cause instanceof Deno.errors.NotFound) return;
+    throw instanceError(`${path} could not be inspected`, undefined, cause);
+  }
+  if (info.isSymlink) {
+    throw instanceError(
+      `${path} is a symbolic link, which this installer will not follow`,
+      "Delete the link; the installer keeps its state inside the instance, nowhere else.",
+    );
+  }
+  if (info.isDirectory) {
+    throw instanceError(`${path} is a directory, but the installer keeps its state in a file`);
+  }
+}
+
+/**
  * Read `state.json`, tolerating everything except a version this installer
  * would misread.
  *
@@ -75,6 +102,7 @@ export async function loadState(
   os: OsKind = currentOs(),
 ): Promise<LoadedState> {
   const path = statePath(installerDirectory, os);
+  await assertRealStateFile(path);
   let text: string;
   try {
     text = await Deno.readTextFile(path);
@@ -145,11 +173,10 @@ export async function saveState(
     installs: state.installs,
     history: state.history.slice(-HISTORY_LIMIT),
   };
+  const path = statePath(installerDirectory, os);
+  await assertRealStateFile(path);
   try {
-    await writeFileAtomic(
-      statePath(installerDirectory, os),
-      `${JSON.stringify(body, null, 2)}\n`,
-    );
+    await writeFileAtomic(path, `${JSON.stringify(body, null, 2)}\n`);
   } catch (cause) {
     throw new AppError("E_WRITE", `Could not record the install state in ${installerDirectory}`, {
       hint: "The install itself succeeded; re-running it will record the state.",
