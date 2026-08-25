@@ -564,8 +564,13 @@ That is why `--source-archive` is required. The packager hashes it, refuses it u
 archive the run recorded, finds the quest lang file inside it with the same rules the run used,
 recomputes every per-key digest from those bytes, and refuses any manifest that disagrees — key
 counts included. Only then is the payload compared, against the source **as read** rather than as
-described: same keys, and not the same text. `--generated-at` overrides only the timestamp; it is
-not a way past any of it.
+described — and string by string rather than in bulk: same keys, the same strings in the same
+places, and not one of the source's own sentences still sitting there word for word. "Did anything
+change?" is too weak a question; one translated title in a file of English descriptions answers it
+yes. Strings a translation run is _supposed_ to hand back untouched — empty ones, markup, a single
+short word — are recognised by the translator's own classifier, the one that refuses a provider for
+echoing its input, so an honest overlay is never caught by this. `--generated-at` overrides only the
+timestamp; it is not a way past any of it.
 
 That is what keeps the pack's own English prose out of a bundle, and the guarantee is _relative to
 the archive you supply_. It establishes "this payload is a translation of the quest file in that

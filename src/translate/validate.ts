@@ -66,8 +66,14 @@ function multisetDiff(
  * removed with the same shared detector the preservation check uses, so the two
  * can never disagree -- a string the validator protects as markup is a string
  * this function agrees carries no prose.
+ *
+ * Exported because the packager asks the same question of a finished overlay.
+ * `validateUnit` refuses a *provider* that hands a translatable string back
+ * unchanged; provenance refuses a *payload* that still carries one. Two
+ * separate notions of "this did not need translating" would mean an overlay
+ * that no run could have produced, or one that every run does.
  */
-function isTranslatable(text: string): boolean {
+export function isTranslatable(text: string): boolean {
   const stripped = stripPlaceholders(text)
     .replace(/[&§][0-9a-fk-orA-FK-OR]/g, "")
     .trim();

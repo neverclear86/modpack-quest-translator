@@ -4,6 +4,8 @@ import { readZip } from "../archive/zip/reader.ts";
 import { shippedLangPath } from "../installer/bundle.ts";
 import { digestByKey } from "../quests/digest.ts";
 import { ftbQuestsLangAdapter } from "../quests/ftbquests_lang.ts";
+import type { TranslationUnit } from "../quests/adapter.ts";
+import { isTranslatable } from "../translate/validate.ts";
 import { sha256Hex } from "../util/hash.ts";
 
 export const TRANSLATION_MANIFEST_NAME = "translation-manifest.json";
@@ -222,6 +224,8 @@ interface ReadSource {
   digests: Record<string, string>;
   keyCount: number;
   unitCount: number;
+  /** Every string, with the id that says where in the file it sits. */
+  units: readonly TranslationUnit[];
 }
 
 /**
@@ -291,6 +295,7 @@ async function readRecordedSource(
     digests: digestByKey(document.units),
     keyCount: document.keyCount,
     unitCount: document.units.length,
+    units: document.units,
   };
 }
 
@@ -357,12 +362,27 @@ function assertManifestDescribesTheSource(
 }
 
 /**
- * The last check: the payload has to be a translation *of that source*.
+ * The last check: the payload has to be a translation *of that source*, all the
+ * way through.
  *
- * A translation preserves the key set and changes the text behind it. Compared
- * against the source as independently read -- not against the manifest's
- * account of it -- a payload that reproduces every digest is the pack's own
- * prose, whatever the manifest beside it says.
+ * A translation preserves the structure and changes the text inside it. Both
+ * halves of that are compared against the source as independently read, never
+ * against the manifest's account of it.
+ *
+ * "Changed the text" used to mean "at least one key digests differently", and
+ * that is far too weak: one Japanese title in a file of English descriptions
+ * satisfies it, and the overlay ships with `containsSourceProse: false` while
+ * carrying most of the pack's own prose. So every string is compared to the
+ * source string with the same id, and one that came back untouched is refused
+ * -- unless it is a string a translation run is *supposed* to hand back
+ * untouched.
+ *
+ * Which strings those are is not decided here. `isTranslatable` is the
+ * translator's own classifier: the one `validateUnit` uses to refuse a provider
+ * that echoes its input. Empty and whitespace-only strings, strings made
+ * entirely of protected tokens or formatting codes, and single words too short
+ * to be prose come back byte-identical from an honest run, and a rule invented
+ * here instead would refuse honest overlays or admit dishonest ones.
  */
 function assertPayloadIsATranslationOf(source: ReadSource, payload: Uint8Array): void {
   const text = new TextDecoder().decode(payload);
@@ -374,7 +394,8 @@ function assertPayloadIsATranslationOf(source: ReadSource, payload: Uint8Array):
       REBUILD,
     );
   }
-  const payloadDigests = digestByKey(ftbQuestsLangAdapter.extract(text).units);
+  const payloadUnits = ftbQuestsLangAdapter.extract(text).units;
+  const payloadDigests = digestByKey(payloadUnits);
 
   const payloadKeys = Object.keys(payloadDigests).sort();
   const sourceKeys = Object.keys(source.digests).sort();
@@ -382,6 +403,21 @@ function assertPayloadIsATranslationOf(source: ReadSource, payload: Uint8Array):
     throw refuse(
       `The overlay's quest file has ${payloadKeys.length} keys, but ${source.path} in ` +
         `--source-archive has ${sourceKeys.length} -- they are not the same file`,
+      REBUILD,
+    );
+  }
+
+  // A unit id is the key plus, for a description, which line of it -- so this
+  // catches a payload that kept every key while losing a line out of one.
+  const payloadById = new Map(payloadUnits.map((unit) => [unit.id, unit]));
+  const missing = source.units.filter((unit) => !payloadById.has(unit.id)).map((unit) => unit.id);
+  const added = payloadUnits.filter((unit) => !source.units.some((s) => s.id === unit.id));
+  if (missing.length > 0 || added.length > 0) {
+    throw refuse(
+      `The overlay's quest file has ${payloadUnits.length} strings, but ${source.path} in ` +
+        `--source-archive has ${source.units.length} -- ${
+          describe([...missing, ...added.map((unit) => unit.id)])
+        } do not line up`,
       REBUILD,
     );
   }
@@ -394,6 +430,26 @@ function assertPayloadIsATranslationOf(source: ReadSource, payload: Uint8Array):
       "Package the translated overlay, not the file the translation was read from.",
     );
   }
+
+  const translatable = source.units.filter((unit) => isTranslatable(unit.text));
+  const untouched = translatable
+    .filter((unit) => payloadById.get(unit.id)!.text === unit.text)
+    .map((unit) => unit.id);
+  if (untouched.length > 0) {
+    throw refuse(
+      `The overlay's quest file still carries ${untouched.length} of the ${translatable.length} ` +
+        `translatable strings in ${source.path} in --source-archive word for word ` +
+        `(${describe(untouched)}), so it is part translation and part the pack's own prose`,
+      "Re-run the translation until every string it did not deliberately skip has been " +
+        "translated, then package that overlay. A run that could not translate a string records " +
+        "it as a failure rather than passing it through.",
+    );
+  }
+}
+
+/** The first few of a list of ids, for a message that has to stay readable. */
+function describe(ids: readonly string[]): string {
+  return ids.length > 3 ? `${ids.slice(0, 3).join(", ")}, ...` : ids.join(", ");
 }
 
 function parseObject(text: string, name: string): Record<string, unknown> {

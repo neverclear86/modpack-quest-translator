@@ -43,6 +43,46 @@ const JAPANESE = `{
 /** The pack archive the run read, so the manifest can be checked against it. */
 const SOURCE = await sourceArchiveOf(ENGLISH);
 
+/**
+ * One key translated, and two of the pack's own English sentences left exactly
+ * as they were. A per-key digest comparison sees three keys of which one
+ * differs and calls the whole file a translation.
+ */
+const PART_ENGLISH = `{
+  aca.quest.1.title: "飛行船を作る"
+  aca.quest.1.desc: "Assemble a hull and sail the clouds"
+  aca.quest.2.title: "Reach the Stratosphere"
+}
+`;
+
+/**
+ * A source file whose strings are mostly ones a translation run is *supposed*
+ * to hand back unchanged: empty, whitespace, a bare image tag, a bare
+ * formatting code, and a word too short to be prose. Only the two sentences
+ * have anything in them a translator could change.
+ */
+const TECHNICAL = `{
+  aca.quest.3.title: "Build a Steam Engine"
+  aca.quest.3.quest_desc: [
+    ""
+    "   "
+    "{image:allofcreate:textures/qb_image.png width:397 height:140 align:center}"
+    "&e"
+    "Andesite"
+    "Pressurize the boiler and watch the flywheel spin"
+  ]
+}
+`;
+
+const TECHNICAL_JAPANESE = TECHNICAL
+  .replace('"Build a Steam Engine"', '"蒸気機関を作る"')
+  .replace(
+    '"Pressurize the boiler and watch the flywheel spin"',
+    '"ボイラーを加圧してフライホイールが回るのを見よう"',
+  );
+
+const TECHNICAL_SOURCE = await sourceArchiveOf(TECHNICAL);
+
 function sourceDigests(snbt: string): Record<string, string> {
   return digestByKey(ftbQuestsLangAdapter.extract(snbt).units);
 }
@@ -346,6 +386,60 @@ Deno.test("a manifest pointing at a file the archive does not hold is refused", 
   await refused(
     await overlayOf(JAPANESE, { sourcePath: "overrides/config/ftbquests/quests/lang/zz_zz.snbt" }),
     "says it read",
+  );
+});
+
+/**
+ * The reviewer's second sequence: a payload that is part translation and part
+ * the pack's own prose.
+ *
+ * Comparing per-key digests answers "did *anything* change?", and one Japanese
+ * title was enough to make it say yes -- so an overlay carrying two of ACA's
+ * English sentences verbatim was packaged with `containsSourceProse: false`.
+ * The payload is now compared string by string against the source as read out
+ * of the archive, and a source string the translator's own validator would have
+ * rejected coming back unchanged is rejected here too.
+ */
+Deno.test("an overlay that left two English prose strings untranslated is refused", async () => {
+  const overlay = await overlayOf(PART_ENGLISH);
+  await refused(overlay, "word for word");
+  const error = await assertRejects(() => buildInstallerBundle(args(overlay)), AppError);
+  // Named, so whoever rebuilds the overlay knows which strings to look at.
+  assertStringIncludes(error.message, "aca.quest.1.desc");
+  assertStringIncludes(error.message, "aca.quest.2.title");
+});
+
+Deno.test("the strings a translation run legitimately skips may come back unchanged", async () => {
+  // Empty, whitespace-only, markup-only and too-short-to-be-prose strings are
+  // exactly what `validateUnit` allows a provider to return byte-identical, so
+  // refusing them here would refuse every honest overlay that has one.
+  const built = await buildInstallerBundle(
+    args(
+      await overlayOf(TECHNICAL_JAPANESE, {
+        sourceArchiveSha256: TECHNICAL_SOURCE.sha256,
+        sourcePath: TECHNICAL_SOURCE.path,
+        keyCounts: { keys: 2, strings: 7, translated: 2, cached: 0, skipped: 5, fallback: 0 },
+        sourceKeyDigests: sourceDigests(TECHNICAL),
+      }, finishedRun({ translated: 2, skipped: 5 })),
+      { sourceArchive: TECHNICAL_SOURCE.bytes },
+    ),
+  );
+  assertEquals(built.manifest.containsSourceProse, false);
+});
+
+Deno.test("a payload that dropped a line out of a description is refused", async () => {
+  // Same keys, and every remaining string translated -- but one array element
+  // fewer, which a per-key digest cannot describe and a player would notice.
+  const shortened = TECHNICAL_JAPANESE.replace('    "&e"\n', "");
+  await refused(
+    await overlayOf(shortened, {
+      sourceArchiveSha256: TECHNICAL_SOURCE.sha256,
+      sourcePath: TECHNICAL_SOURCE.path,
+      keyCounts: { keys: 2, strings: 7, translated: 2, cached: 0, skipped: 5, fallback: 0 },
+      sourceKeyDigests: sourceDigests(TECHNICAL),
+    }, finishedRun({ translated: 2, skipped: 5 })),
+    "strings",
+    { sourceArchive: TECHNICAL_SOURCE.bytes },
   );
 });
 
