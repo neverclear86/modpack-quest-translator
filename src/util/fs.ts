@@ -4,13 +4,6 @@ import { currentDurability, type Durability } from "./durable.ts";
 export interface AtomicWriteOptions {
   /** How bytes are pushed past the page cache. Injected so faults are testable. */
   durability?: Durability;
-  /**
-   * Run after the temporary file is durable and immediately before the rename
-   * that publishes it. Throwing here abandons the write with the destination
-   * untouched, which is how a target that changed under us is caught at the
-   * last instant we can still stop.
-   */
-  beforeRename?: () => Promise<void>;
 }
 
 /**
@@ -21,6 +14,12 @@ export interface AtomicWriteOptions {
  * A flush that fails is an error, not a shrug. The bytes reaching the page
  * cache is not the same as the bytes reaching the disk, and the caller may well
  * be about to destroy the only other copy of them.
+ *
+ * The rename replaces whatever is at the destination, which makes this right
+ * for files this tool owns outright -- its cache, its `state.json`, the archives
+ * it writes -- and wrong for a file inside somebody's Minecraft instance, where
+ * "whatever is there" may be a modpack update that arrived a millisecond ago.
+ * Those go through `installer/publish.ts`, which cannot overwrite anything.
  */
 export async function writeFileAtomic(
   path: string,
@@ -56,13 +55,6 @@ export async function writeFileAtomic(
     throw new AppError("E_WRITE", `Could not write ${path}`, { cause });
   } finally {
     file?.close();
-  }
-
-  try {
-    if (options.beforeRename) await options.beforeRename();
-  } catch (cause) {
-    await Deno.remove(temp).catch(() => {});
-    throw cause;
   }
 
   try {

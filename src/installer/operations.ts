@@ -1,6 +1,5 @@
 import { AppError } from "../errors.ts";
 import { currentDurability, type Durability } from "../util/durable.ts";
-import { writeFileAtomic } from "../util/fs.ts";
 import { sha256Hex } from "../util/hash.ts";
 import {
   type BackupKind,
@@ -11,11 +10,13 @@ import {
 } from "./backup.ts";
 import { loadBundle, loadBundleManifest, type LoadedBundle } from "./bundle.ts";
 import {
+  createDirectoryInsideRoot,
   type ResolvedInstance,
   type ResolvedTarget,
   resolveInstanceRoot,
   resolveTargetPath,
 } from "./instance.ts";
+import { listStaged, publishFile, type PublishGap, recoverStaged, removeFile } from "./publish.ts";
 import { currentOs, type OsKind } from "./paths.ts";
 import { type InstallerState, type InstallRecord, loadState, saveState } from "./state.ts";
 
@@ -42,8 +43,21 @@ export interface OperationContext {
   interlude?: (stage: InterludeStage, target: string) => Promise<void>;
 }
 
-/** The destructive boundaries, in the order a run reaches them. */
-export type InterludeStage = "after-capture" | "before-replace" | "before-rename";
+/**
+ * The destructive boundaries, in the order a run reaches them.
+ *
+ * The last two are inside the publishing transaction: `before-rename` is the
+ * instant before the target is moved aside, and `in-gap` the instant after,
+ * while its name is free. A write landing in either is what `publish.ts` exists
+ * to survive.
+ */
+export type InterludeStage = "after-capture" | "before-replace" | "before-rename" | "in-gap";
+
+/** The interlude stage each of the transaction's own gaps reports as. */
+const GAP_STAGE: Record<PublishGap, InterludeStage> = {
+  "before-move": "before-rename",
+  "after-move": "in-gap",
+};
 
 export type InstallStatus =
   /** The payload replaced something else, or landed where nothing was. */
@@ -381,6 +395,99 @@ async function assertUnchanged(
 }
 
 /**
+ * The target's directory, created a level at a time and flushed.
+ *
+ * `mkdir --recursive` would walk straight through a parent swapped for a
+ * symbolic link since the plan was made; creating each level explicitly and
+ * re-inspecting what turned up cannot. A directory entry is not durable until
+ * its own parent has been flushed, and the payload about to land inside it is
+ * replacing the pack's own file.
+ */
+async function ensureTargetDirectory(session: Session, relativePath: string): Promise<void> {
+  const segments = relativePath.split("/");
+  if (segments.length <= 1) return;
+  const { created } = await createDirectoryInsideRoot(
+    session.instance.root,
+    segments.slice(0, -1),
+    { os: session.os },
+  );
+  for (const directory of [...created].reverse()) {
+    await session.durability.syncDirectory(parentDirectoryOf(directory));
+  }
+}
+
+function parentDirectoryOf(path: string): string {
+  const index = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return index <= 0 ? path : path.slice(0, index);
+}
+
+/**
+ * Somewhere for bytes the transaction moved aside and cannot put back.
+ *
+ * They are kept as a `modified-install`, which is deliberately not a restore
+ * candidate: this is a file another process's write displaced, so it is
+ * preserved for a human to look at and never silently reinstated.
+ */
+function rescueInto(
+  session: Session,
+  context: OperationContext,
+  relativePath: string,
+): (bytes: Uint8Array) => Promise<string> {
+  return async (bytes: Uint8Array): Promise<string> => {
+    const record = await session.store.capture({
+      relativePath,
+      bytes,
+      kind: "modified-install",
+      capturedAt: context.now().toISOString(),
+    });
+    return record.relativePath;
+  };
+}
+
+/** Everything a publishing transaction needs from the run around it. */
+function transaction(session: Session, context: OperationContext, relativePath: string) {
+  return {
+    durability: session.durability,
+    rescue: rescueInto(session, context, relativePath),
+    gap: async (stage: PublishGap) => {
+      await context.interlude?.(GAP_STAGE[stage], relativePath);
+    },
+  };
+}
+
+/**
+ * Finish anything a crash left half-published, before this run plans anything.
+ *
+ * A run killed between moving the target aside and publishing the payload
+ * leaves the captured file next to the target under a name derived from it.
+ * Nothing has to have been written to `state.json` for that to be recoverable:
+ * the evidence is in the one directory that matters.
+ */
+async function recoverInterrupted(
+  session: Session,
+  context: OperationContext,
+  paths: readonly string[],
+): Promise<void> {
+  for (const relativePath of paths) {
+    const target = await resolveTargetPath(session.instance.root, relativePath, { os: session.os });
+    for (
+      const recovered of await recoverStaged(
+        target.path,
+        transaction(session, context, relativePath),
+      )
+    ) {
+      session.warnings.push(
+        recovered.outcome === "put-back"
+          ? `An interrupted run had moved ${relativePath} aside; it has been put back.`
+          : `An interrupted run had moved ${relativePath} aside, and something else has since ` +
+            `created a file there. The newer file was kept and the older one is at ` +
+            `${recovered.location}.`,
+      );
+    }
+  }
+}
+
+/**
  * One target's worth of undo: what it held before this run changed it.
  *
  * Planning refuses across all targets before a single byte is written, but a
@@ -398,21 +505,28 @@ interface AppliedChange {
 
 async function rollBack(
   session: Session,
+  context: OperationContext,
   applied: readonly AppliedChange[],
   failure: unknown,
 ): Promise<never> {
   const notes: string[] = [];
   for (const change of [...applied].reverse()) {
     try {
-      // If something else has changed it again since, leave it alone: undoing
-      // our write would destroy theirs.
-      await assertUnchanged(session, change.relativePath, change.wrote);
+      // Undone through the same non-clobbering transaction as the write it is
+      // undoing: if something else has changed the file again since, the
+      // transaction refuses rather than destroying theirs.
+      const target = await resolveTargetPath(session.instance.root, change.relativePath, {
+        os: session.os,
+      });
+      const options = {
+        path: target.path,
+        expected: change.wrote,
+        ...transaction(session, context, change.relativePath),
+      };
       if (change.previous === null) {
-        await Deno.remove(change.path);
+        await removeFile(options);
       } else {
-        await writeFileAtomic(change.path, change.previous, {
-          durability: session.durability,
-        });
+        await publishFile(change.previous, options);
       }
       notes.push(`${change.relativePath}: put back`);
     } catch (cause) {
@@ -463,6 +577,7 @@ interface Classified {
 export async function install(context: OperationContext): Promise<InstallResult> {
   const bundle = await loadBundle(context.bundleDir);
   const session = await open(context, bundle);
+  await recoverInterrupted(session, context, bundle.manifest.payload.map((entry) => entry.path));
   const known = knownPayloadDigests(session);
 
   const plan: Classified[] = [];
@@ -527,12 +642,11 @@ export async function install(context: OperationContext): Promise<InstallResult>
       if (step.status !== "already-installed") {
         await context.interlude?.("before-replace", entry.path);
         const target = await assertUnchanged(session, entry.path, step.currentSha256);
-        await writeFileAtomic(target.path, entry.bytes, {
-          durability: session.durability,
-          beforeRename: async () => {
-            await context.interlude?.("before-rename", entry.path);
-            await assertUnchanged(session, entry.path, step.currentSha256);
-          },
+        await ensureTargetDirectory(session, entry.path);
+        await publishFile(entry.bytes, {
+          path: target.path,
+          expected: step.currentSha256,
+          ...transaction(session, context, entry.path),
         });
         applied.push({
           relativePath: entry.path,
@@ -542,7 +656,7 @@ export async function install(context: OperationContext): Promise<InstallResult>
         });
       }
     } catch (failure) {
-      await rollBack(session, applied, failure);
+      await rollBack(session, context, applied, failure);
     }
 
     const originalBackup = step.capture === "original" || step.capture === "absent"
@@ -714,6 +828,7 @@ export async function uninstall(context: OperationContext): Promise<UninstallRes
   const loadedManifest = await loadBundleManifest(context.bundleDir);
   const bundle: LoadedBundle = { ...loadedManifest, payload: [] };
   const session = await open(context, bundle);
+  await recoverInterrupted(session, context, bundle.manifest.payload.map((entry) => entry.path));
 
   // Every target is resolved, classified and its backup verified before a
   // single byte is written. A bundle may carry more than one quest lang file,
@@ -750,10 +865,16 @@ export async function uninstall(context: OperationContext): Promise<UninstallRes
 
       if (deleted) {
         if (step.current !== null) {
-          try {
-            await Deno.remove(target.path);
-          } catch (cause) {
-            throw new AppError("E_WRITE", `Could not remove ${target.path}`, { cause });
+          const outcome = await removeFile({
+            path: target.path,
+            expected: step.currentSha256,
+            ...transaction(session, context, step.relativePath),
+          });
+          if (outcome.keptForeignFile) {
+            session.warnings.push(
+              `${step.relativePath} was recreated by something else while it was being removed. ` +
+                `That newer file was left exactly as it is.`,
+            );
           }
           applied.push({
             relativePath: step.relativePath,
@@ -766,12 +887,11 @@ export async function uninstall(context: OperationContext): Promise<UninstallRes
         const digest = restoredSha256.get(step.relativePath) ??
           await sha256Hex(step.bytes);
         restoredSha256.set(step.relativePath, digest);
-        await writeFileAtomic(target.path, step.bytes, {
-          durability: session.durability,
-          beforeRename: async () => {
-            await context.interlude?.("before-rename", step.relativePath);
-            await assertUnchanged(session, step.relativePath, step.currentSha256);
-          },
+        await ensureTargetDirectory(session, step.relativePath);
+        await publishFile(step.bytes, {
+          path: target.path,
+          expected: step.currentSha256,
+          ...transaction(session, context, step.relativePath),
         });
         applied.push({
           relativePath: step.relativePath,
@@ -781,7 +901,7 @@ export async function uninstall(context: OperationContext): Promise<UninstallRes
         });
       }
     } catch (failure) {
-      await rollBack(session, applied, failure);
+      await rollBack(session, context, applied, failure);
     }
 
     targets.push({
@@ -914,6 +1034,15 @@ export async function status(context: OperationContext): Promise<StatusResult> {
     const currentSha256 = current === null ? null : await sha256Hex(current);
     const record = session.state.installs[entry.path];
     const chosen = await chooseBackup(session, entry.path, record);
+
+    // Reporting is not repairing: say a run was interrupted, and leave
+    // finishing it to install or uninstall, which are allowed to write.
+    for (const staged of await listStaged(target.path)) {
+      session.warnings.push(
+        `An interrupted run left ${entry.path} moved aside at ${staged}. ` +
+          `Running install or uninstall again will put it back.`,
+      );
+    }
 
     targets.push({
       relativePath: entry.path,
