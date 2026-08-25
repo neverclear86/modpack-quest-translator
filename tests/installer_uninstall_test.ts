@@ -233,3 +233,37 @@ Deno.test("--force writes nothing at all when no backup can be restored", async 
     assertEquals(await fixture.read(), edited);
   });
 });
+
+Deno.test("a refusal on one target leaves every other target untouched", async () => {
+  // A bundle can carry more than one quest lang file, and uninstall must be
+  // all-or-nothing across them: restoring the first and then refusing on the
+  // second would leave the instance in a state neither the player nor a later
+  // run asked for.
+  const other = "config/ftbquests/quests/lang/ja_jp.snbt";
+  const fixture = await makeFixture({
+    payloads: { [TARGET_RELATIVE]: JAPANESE, [other]: '{ quest.title: "第二章" }\n' },
+  });
+  try {
+    await Deno.writeTextFile(
+      `${fixture.instanceRoot}/${other}`,
+      '{ quest.title: "Chapter Two" }\n',
+    );
+    await install(context(fixture));
+
+    // The player edited the second installed file, but not the first.
+    await Deno.writeTextFile(
+      `${fixture.instanceRoot}/${other}`,
+      '{ quest.title: "私の書き換え" }\n',
+    );
+
+    const error = await assertRejects(() => uninstall(context(fixture)), AppError);
+    assertEquals(error.code, "E_TARGET_MODIFIED");
+    assertEquals(await fixture.read(), JAPANESE);
+    assertEquals(
+      await Deno.readTextFile(`${fixture.instanceRoot}/${other}`),
+      '{ quest.title: "私の書き換え" }\n',
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});

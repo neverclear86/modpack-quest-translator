@@ -415,6 +415,17 @@ function classify(args: ClassifyArgs): Classified {
   return { ...base, status: "installed", capture: "original" };
 }
 
+interface Restoration {
+  relativePath: string;
+  target: ResolvedTarget;
+  current: Uint8Array | null;
+  /** True when the file was edited after we installed it; --force keeps it. */
+  modified: boolean;
+  backup: BackupRecord;
+  /** The verified backup bytes, read before anything is written. */
+  bytes: Uint8Array;
+}
+
 /** Restore what was there before, or delete if there was nothing. */
 export async function uninstall(context: OperationContext): Promise<UninstallResult> {
   // The payload bytes are not needed to undo an install, so a bundle whose
@@ -422,111 +433,58 @@ export async function uninstall(context: OperationContext): Promise<UninstallRes
   const loadedManifest = await loadBundleManifest(context.bundleDir);
   const bundle: LoadedBundle = { ...loadedManifest, payload: [] };
   const session = await open(context, bundle);
+
+  // Every target is resolved, classified and its backup verified before a
+  // single byte is written. A bundle may carry more than one quest lang file,
+  // and undoing half of one is a state neither the player nor a later run
+  // asked for.
   const known = knownPayloadDigests(session);
+  const plan: Restoration[] = [];
+  for (const entry of bundle.manifest.payload) {
+    plan.push(await planRestore(session, context, known, entry));
+  }
 
   const targets: UninstallTargetOutcome[] = [];
-  for (const entry of bundle.manifest.payload) {
-    const target = await resolveTargetPath(session.instance.root, entry.path, { os: session.os });
-    const current = await readIfPresent(target.path);
-    const currentSha256 = current === null ? null : await sha256Hex(current);
-    const record = session.state.installs[entry.path];
-
-    const looksInstalled = currentSha256 !== null && known.has(currentSha256);
-    if (!record && !looksInstalled) {
-      throw new AppError(
-        "E_NOT_INSTALLED",
-        `Nothing from this bundle is installed at ${target.path}`,
-        {
-          hint: current === null
-            ? "There is no quest translation there to remove."
-            : "The file there was not written by this installer, so it is left alone.",
-        },
-      );
-    }
-
-    const modified = current !== null && !looksInstalled && record !== undefined;
-    if (modified && !context.force) {
-      throw new AppError(
-        "E_TARGET_MODIFIED",
-        `${target.path} has changed since it was installed`,
-        {
-          hint: "Re-run with --force to restore anyway; the file that is there now will be " +
-            "kept as a backup first.",
-          details: { target: entry.path },
-        },
-      );
-    }
-
-    // The backup is chosen before anything is written, so an unusable one
-    // leaves the instance untouched even when --force asked us to press on.
-    const chosen = await chooseBackup(session, entry.path, record?.originalBackup);
-    if ("failures" in chosen) {
-      throw new AppError(
-        "E_BACKUP",
-        `No usable backup of ${entry.path} was found, so nothing was changed.\n` +
-          (chosen.failures.length > 0
-            ? chosen.failures.map((line) => `  - ${line}`).join("\n")
-            : `  - no backup record exists in ${session.store.backupsDirectory}`),
-        {
-          hint: "The translated file is still in place and can be deleted by hand; " +
-            "the pack's own file can be restored by reinstalling the modpack.",
-          details: { target: entry.path },
-        },
-      );
-    }
-
+  for (const step of plan) {
     let keptModifiedAs: string | undefined;
-    if (modified) {
+    if (step.modified) {
       const kept = await session.store.capture({
-        relativePath: entry.path,
-        bytes: current,
+        relativePath: step.relativePath,
+        bytes: step.current,
         kind: "modified-install",
         capturedAt: context.now().toISOString(),
       });
       keptModifiedAs = kept.relativePath;
     }
 
-    const at = context.now().toISOString();
-    if (chosen.record.sidecar.kind === "absent") {
-      if (current !== null) {
+    const deleted = step.backup.sidecar.kind === "absent";
+    if (deleted) {
+      if (step.current !== null) {
         try {
-          await Deno.remove(target.path);
+          await Deno.remove(step.target.path);
         } catch (cause) {
-          throw new AppError("E_WRITE", `Could not remove ${target.path}`, { cause });
+          throw new AppError("E_WRITE", `Could not remove ${step.target.path}`, { cause });
         }
       }
-      targets.push({
-        relativePath: entry.path,
-        path: target.path,
-        status: "deleted",
-        restoredFrom: chosen.record.relativePath,
-        ...(keptModifiedAs ? { keptModifiedAs } : {}),
-      });
-      session.state.history.push({
-        event: "uninstall",
-        target: entry.path,
-        at,
-        restoredFrom: chosen.record.relativePath,
-        deleted: true,
-      });
     } else {
-      await writeFileAtomic(target.path, chosen.bytes);
-      targets.push({
-        relativePath: entry.path,
-        path: target.path,
-        status: "restored",
-        restoredFrom: chosen.record.relativePath,
-        ...(keptModifiedAs ? { keptModifiedAs } : {}),
-      });
-      session.state.history.push({
-        event: "uninstall",
-        target: entry.path,
-        at,
-        restoredFrom: chosen.record.relativePath,
-      });
+      await writeFileAtomic(step.target.path, step.bytes);
     }
 
-    delete session.state.installs[entry.path];
+    targets.push({
+      relativePath: step.relativePath,
+      path: step.target.path,
+      status: deleted ? "deleted" : "restored",
+      restoredFrom: step.backup.relativePath,
+      ...(keptModifiedAs ? { keptModifiedAs } : {}),
+    });
+    session.state.history.push({
+      event: "uninstall",
+      target: step.relativePath,
+      at: context.now().toISOString(),
+      restoredFrom: step.backup.relativePath,
+      ...(deleted ? { deleted: true } : {}),
+    });
+    delete session.state.installs[step.relativePath];
   }
 
   await saveState(session.store.installerDirectory, session.state, session.os);
@@ -536,6 +494,70 @@ export async function uninstall(context: OperationContext): Promise<UninstallRes
     instance: session.instance,
     targets,
     warnings: session.warnings,
+  };
+}
+
+/** Decide what undoing one target means, refusing before anything is written. */
+async function planRestore(
+  session: Session,
+  context: OperationContext,
+  known: Set<string>,
+  entry: { path: string },
+): Promise<Restoration> {
+  const target = await resolveTargetPath(session.instance.root, entry.path, { os: session.os });
+  const current = await readIfPresent(target.path);
+  const currentSha256 = current === null ? null : await sha256Hex(current);
+  const record = session.state.installs[entry.path];
+
+  const looksInstalled = currentSha256 !== null && known.has(currentSha256);
+  if (!record && !looksInstalled) {
+    throw new AppError(
+      "E_NOT_INSTALLED",
+      `Nothing from this bundle is installed at ${target.path}`,
+      {
+        hint: current === null
+          ? "There is no quest translation there to remove."
+          : "The file there was not written by this installer, so it is left alone.",
+      },
+    );
+  }
+
+  const modified = current !== null && !looksInstalled && record !== undefined;
+  if (modified && !context.force) {
+    throw new AppError(
+      "E_TARGET_MODIFIED",
+      `${target.path} has changed since it was installed`,
+      {
+        hint: "Re-run with --force to restore anyway; the file that is there now will be " +
+          "kept as a backup first.",
+        details: { target: entry.path },
+      },
+    );
+  }
+
+  const chosen = await chooseBackup(session, entry.path, record?.originalBackup);
+  if ("failures" in chosen) {
+    throw new AppError(
+      "E_BACKUP",
+      `No usable backup of ${entry.path} was found, so nothing was changed.\n` +
+        (chosen.failures.length > 0
+          ? chosen.failures.map((line) => `  - ${line}`).join("\n")
+          : `  - no backup record exists in ${session.store.backupsDirectory}`),
+      {
+        hint: "The translated file is still in place and can be deleted by hand; " +
+          "the pack's own file can be restored by reinstalling the modpack.",
+        details: { target: entry.path },
+      },
+    );
+  }
+
+  return {
+    relativePath: entry.path,
+    target,
+    current,
+    modified,
+    backup: chosen.record,
+    bytes: chosen.bytes,
   };
 }
 

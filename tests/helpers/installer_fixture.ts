@@ -17,6 +17,8 @@ export const INSTANCE_NAME = "インスタンス フォルダ";
 export interface FixtureOptions {
   /** Payload text the bundle installs. */
   payload?: string;
+  /** More than one payload, keyed by instance-relative path. Overrides `payload`. */
+  payloads?: Record<string, string>;
   /** File already at the target, or null for none. */
   existing?: string | null;
   bundleId?: string;
@@ -37,11 +39,17 @@ export interface Fixture {
 }
 
 export async function writeBundleDir(dir: string, options: FixtureOptions = {}): Promise<string> {
-  const payload = options.payload ?? JAPANESE;
+  const payloads = options.payloads ?? { [TARGET_RELATIVE]: options.payload ?? JAPANESE };
   const bundleId = options.bundleId ?? "aca-2.4-ja_jp-en_us-override";
-  const bytes = new TextEncoder().encode(payload);
-  await Deno.mkdir(`${dir}/payload/config/ftbquests/quests/lang`, { recursive: true });
-  await Deno.writeFile(`${dir}/payload/${TARGET_RELATIVE}`, bytes);
+
+  const payload: { path: string; sha256: string; sizeBytes: number }[] = [];
+  for (const path of Object.keys(payloads).sort()) {
+    const bytes = new TextEncoder().encode(payloads[path]);
+    await Deno.mkdir(`${dir}/payload/config/ftbquests/quests/lang`, { recursive: true });
+    await Deno.writeFile(`${dir}/payload/${path}`, bytes);
+    payload.push({ path, sha256: await sha256Hex(bytes), sizeBytes: bytes.byteLength });
+  }
+
   await Deno.writeTextFile(
     `${dir}/bundle-manifest.json`,
     `${
@@ -57,11 +65,7 @@ export async function writeBundleDir(dir: string, options: FixtureOptions = {}):
           targetLocale: "ja_jp",
           overrideEnglish: true,
           containsSourceProse: false,
-          payload: [{
-            path: TARGET_RELATIVE,
-            sha256: await sha256Hex(bytes),
-            sizeBytes: bytes.byteLength,
-          }],
+          payload,
           binaries: [],
         },
         null,
