@@ -1,0 +1,5 @@
+dist/
+.tmp/
+*.zip
+!tests/fixtures/**/*.zip
+coverage/
