@@ -1,6 +1,11 @@
 import { parseSnbt } from "../quests/snbt/mod.ts";
 import type { SnbtValue } from "../quests/snbt/mod.ts";
-import { countEscapedAmpersands, findFormattingCodes, findPlaceholders } from "../quests/tokens.ts";
+import {
+  countEscapedAmpersands,
+  findFormattingCodes,
+  findPlaceholders,
+  stripPlaceholders,
+} from "../quests/tokens.ts";
 import type { TranslationUnit } from "../quests/adapter.ts";
 
 export type ProblemKind =
@@ -54,13 +59,15 @@ function multisetDiff(
   return { missing, extra };
 }
 
-/** Does the string carry any meaning a translator could change? */
+/**
+ * Does the string carry any meaning a translator could change? Placeholders are
+ * removed with the same shared detector the preservation check uses, so the two
+ * can never disagree -- a string the validator protects as markup is a string
+ * this function agrees carries no prose.
+ */
 function isTranslatable(text: string): boolean {
-  const stripped = text
+  const stripped = stripPlaceholders(text)
     .replace(/[&§][0-9a-fk-orA-FK-OR]/g, "")
-    .replace(/%\d+\$[sdfx]|%[sdfx]|%%/g, "")
-    .replace(/\{[^{}\n]*\}/g, "")
-    .replace(/<[a-zA-Z_][a-zA-Z0-9_:.]*>/g, "")
     .trim();
   return stripped.length >= UNCHANGED_MIN_LENGTH;
 }

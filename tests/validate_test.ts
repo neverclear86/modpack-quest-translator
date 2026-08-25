@@ -147,3 +147,54 @@ Deno.test("document validation rejects output that does not parse", () => {
   assertEquals(r.ok, false);
   assertEquals(r.problems[0].kind, "parse");
 });
+
+Deno.test("a placeholder that changes its width or precision is rejected", () => {
+  // %02d -> %2d silently drops the zero padding, so the clock reads "9:5".
+  const u = unit("Countdown %02d:%02d");
+  assertEquals(validateUnit(u, "カウントダウン %02d:%02d").ok, true);
+  const widened = validateUnit(u, "カウントダウン %2d:%02d");
+  assertEquals(widened.ok, false);
+  assertEquals(widened.problems[0].kind, "placeholders");
+
+  const precise = unit("%1$.2f SU");
+  assertEquals(validateUnit(precise, "%1$.2f SU").ok, true);
+  const rounded = validateUnit(precise, "%1$.0f SU");
+  assertEquals(rounded.ok, false);
+  assertEquals(rounded.problems[0].kind, "placeholders");
+});
+
+Deno.test("relative and C-style conversions must survive", () => {
+  assertEquals(validateUnit(unit("%s (%<s) is ready"), "%s (%<s) の準備ができました").ok, true);
+  assertEquals(validateUnit(unit("%s (%<s) is ready"), "%s (%s) の準備ができました").ok, false);
+  assertEquals(validateUnit(unit("Holds %u buckets"), "%u バケツを保持します").ok, true);
+  assertEquals(validateUnit(unit("Holds %u buckets"), "バケツを保持します").ok, false);
+  assertEquals(validateUnit(unit("Stack of %i items"), "%i 個のアイテムの束").ok, true);
+});
+
+Deno.test("a literal %% may not become a bare percent sign", () => {
+  const u = unit("Efficiency is now 100%% of the maximum");
+  assertEquals(validateUnit(u, "効率は最大の 100%% になりました").ok, true);
+  const collapsed = validateUnit(u, "効率は最大の 100% になりました");
+  assertEquals(collapsed.ok, false);
+  assertEquals(collapsed.problems[0].kind, "placeholders");
+});
+
+Deno.test("an ordinary percentage in prose is not treated as a placeholder", () => {
+  // A false positive here would fail a perfectly good translation.
+  assertEquals(
+    validateUnit(unit("Deals 50% more damage to mobs"), "モブへのダメージが50%増加").ok,
+    true,
+  );
+  assertEquals(validateUnit(unit("A 5% chance to drop"), "ドロップ率は5パーセントです").ok, true);
+});
+
+Deno.test("the unchanged check uses the same placeholder detector", () => {
+  // A string that is nothing but markup has no prose to translate, so coming
+  // back byte-identical is correct rather than a validation failure.
+  assertEquals(validateUnit(unit("%02d:%02d:%02d"), "%02d:%02d:%02d").ok, true);
+  assertEquals(validateUnit(unit("&6%1$.2f&r %%"), "&6%1$.2f&r %%").ok, true);
+  // Real prose of the same length must still be flagged.
+  const prose = validateUnit(unit("Place the cogwheel"), "Place the cogwheel");
+  assertEquals(prose.ok, false);
+  assertEquals(prose.problems[0].kind, "unchanged");
+});
