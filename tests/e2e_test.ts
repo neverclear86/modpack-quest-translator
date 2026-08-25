@@ -4,6 +4,7 @@ import { writeZip } from "../src/archive/zip/writer.ts";
 import { run } from "../src/cli/run.ts";
 import { parseSnbt } from "../src/quests/snbt/mod.ts";
 import type { FetchLike } from "../src/net/http.ts";
+import { asBufferSource } from "../src/util/bytes.ts";
 
 const LANG = await Deno.readTextFile(new URL("./fixtures/snbt/lang_en_us.snbt", import.meta.url));
 const CHAPTER = await Deno.readTextFile(
@@ -54,7 +55,7 @@ function fetchFor(bytes: Uint8Array): FetchLike {
           primary: true,
         }],
       }])),
-    "https://cdn.modrinth.com/a.mrpack": () => new Response(bytes),
+    "https://cdn.modrinth.com/a.mrpack": () => new Response(asBufferSource(bytes)),
   };
   return (input) => {
     const url = typeof input === "string" ? input : input.toString();

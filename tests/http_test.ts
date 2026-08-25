@@ -1,9 +1,10 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { AppError } from "../src/errors.ts";
 import { BoundedHttpClient, type FetchLike } from "../src/net/http.ts";
+import { asBufferSource } from "../src/util/bytes.ts";
 
 function respond(body: string | Uint8Array, init: ResponseInit = {}): Response {
-  return new Response(body, init);
+  return new Response(typeof body === "string" ? body : asBufferSource(body), init);
 }
 
 /** Router keyed by exact URL. */

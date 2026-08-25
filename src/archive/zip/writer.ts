@@ -1,5 +1,6 @@
 import { AppError } from "../../errors.ts";
 import { normaliseEntryPath } from "../safety.ts";
+import { asBufferSource } from "../../util/bytes.ts";
 
 export interface ZipWriteEntry {
   path: string;
@@ -77,7 +78,8 @@ class ByteWriter {
 }
 
 async function deflateRaw(data: Uint8Array): Promise<Uint8Array> {
-  const stream = new Blob([data]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+  const stream = new Blob([asBufferSource(data)]).stream()
+    .pipeThrough(new CompressionStream("deflate-raw"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 

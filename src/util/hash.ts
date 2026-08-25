@@ -1,9 +1,11 @@
+import { asBufferSource } from "./bytes.ts";
+
 const encoder = new TextEncoder();
 
 /** Hex-encoded SHA-256. */
 export async function sha256Hex(data: Uint8Array | string): Promise<string> {
   const bytes = typeof data === "string" ? encoder.encode(data) : data;
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const digest = await crypto.subtle.digest("SHA-256", asBufferSource(bytes));
   return toHex(new Uint8Array(digest));
 }
 

@@ -3,6 +3,8 @@
  * Test-only: the production writer refuses to emit anything unsafe, so the
  * attack corpus has to be constructed here.
  */
+import { asBufferSource } from "../../src/util/bytes.ts";
+
 export interface RawEntry {
   name: string;
   data: Uint8Array;
@@ -20,7 +22,8 @@ export interface RawEntry {
 const encoder = new TextEncoder();
 
 async function deflateRaw(data: Uint8Array): Promise<Uint8Array> {
-  const stream = new Blob([data]).stream().pipeThrough(new CompressionStream("deflate-raw"));
+  const stream = new Blob([asBufferSource(data)]).stream()
+    .pipeThrough(new CompressionStream("deflate-raw"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 

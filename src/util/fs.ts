@@ -25,13 +25,7 @@ export async function writeFileAtomic(path: string, data: Uint8Array | string): 
     while (written < bytes.byteLength) {
       written += await file.write(bytes.subarray(written));
     }
-    // Durability is best effort: FsFile.sync is unstable on some Deno versions,
-    // and the rename below is what actually makes the write atomic.
-    try {
-      await Deno.fsync(file.rid);
-    } catch {
-      // Not fatal.
-    }
+    await syncToDisk(file);
   } catch (cause) {
     throw new AppError("E_WRITE", `Could not write ${path}`, { cause });
   } finally {
@@ -45,6 +39,31 @@ export async function writeFileAtomic(path: string, data: Uint8Array | string): 
     throw new AppError("E_WRITE", `Could not move the temporary file into place at ${path}`, {
       cause,
     });
+  }
+}
+
+/**
+ * Flush the file to disk, on both supported Deno majors.
+ *
+ * Deno 2 removed `Deno.fsync` along with the resource ids it took, so
+ * `FsFile.sync` is the only option there. Deno 1.41 has `FsFile.sync` on the
+ * object but gates it behind `--unstable-fs`, and calling a gated API *aborts
+ * the process* instead of throwing -- a try/catch cannot rescue it, so the
+ * method cannot simply be attempted. `Deno.fsync` is present on exactly the
+ * majors where the method may be gated and absent on exactly the majors where
+ * the method is the only option, which makes its presence the reliable test.
+ *
+ * Durability is best effort either way: the rename in writeFileAtomic is what
+ * actually makes the write atomic, and a filesystem that declines to flush is
+ * not a reason to fail a run.
+ */
+async function syncToDisk(file: Deno.FsFile): Promise<void> {
+  const legacyFsync = (Deno as unknown as { fsync?: (rid: number) => Promise<void> }).fsync;
+  try {
+    if (legacyFsync) await legacyFsync((file as unknown as { rid: number }).rid);
+    else await file.sync();
+  } catch {
+    // Not fatal.
   }
 }
 

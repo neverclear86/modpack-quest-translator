@@ -1,5 +1,6 @@
 import { AppError } from "../../errors.ts";
 import { normaliseEntryPath, S_IFLNK, unixFileType } from "../safety.ts";
+import { asBufferSource } from "../../util/bytes.ts";
 
 export const ZIP_LIMITS = {
   /** Largest single uncompressed entry we will inflate. */
@@ -277,7 +278,8 @@ async function inflateBounded(
   cap: number,
   record: CentralRecord,
 ): Promise<Uint8Array> {
-  const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  const stream = new Blob([asBufferSource(raw)]).stream()
+    .pipeThrough(new DecompressionStream("deflate-raw"));
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
