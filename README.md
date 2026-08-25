@@ -318,7 +318,19 @@ Same bundle, same steps. Extract the whole ZIP, then:
 - Installing the same bundle twice is a no-op that reports "already installed" and exits 0.
   Installing a newer bundle swaps the translation and keeps the first original backup.
 - Uninstall restores the original byte for byte, verified against the recorded digest, and keeps the
-  backup. If there was no file before install, uninstall deletes the file instead.
+  backup. If there was no file before install, uninstall deletes the file instead. It restores only
+  the backup its own install record names: after a modpack update there are two originals on disk,
+  and if the right one cannot be verified the answer is exit code 13, never the older one.
+- **Nothing is ever written over.** If Minecraft, a sync client or the modpack's own updater writes
+  to the quest file while the installer is working — including in the last instant before the
+  installer publishes — that file wins and is left exactly as it is; the run stops with exit code 12
+  and says so. Installing needs a filesystem with hard links (NTFS, ext4, APFS, btrfs); on one
+  without them the installer refuses up front rather than falling back to a write that could
+  overwrite something.
+- A run killed by a power cut mid-write leaves the quest file next to itself under a `.mqt-staged-…`
+  name. The next install or uninstall puts it back before doing anything else, or keeps it in
+  `backups/` if something else has taken the name since. `status` reports it without changing
+  anything.
 - If you edited the installed file, uninstall refuses with exit code 12 and names `--force`. With
   `--force` your edit is captured as a `modified-install` backup **first**, then the original is
   restored. `--force` never overrides a corrupt bundle, a symlink, a path escaping the instance, or
@@ -479,9 +491,12 @@ touching a file, refuses a manifest that cannot describe itself coherently — a
 `toolVersion` that is not a semver, a `generatedAt` that is not a real timestamp, locales that are
 malformed or identical, a `bundleId` carrying a path separator — refuses a symlinked target or one
 whose resolved parent is outside the instance root (`--force` does not override any of those), and
-writes every file temp-then-`rename` so an interrupted run leaves either the old bytes or the new
-ones. The pack's own English text is never placed inside a bundle; the only copy is the backup on
-the player's own disk.
+publishes every file inside an instance through a transaction that cannot overwrite one: the new
+bytes are flushed to a temporary file, whatever is at the target is renamed aside and digested
+against the plan, and the payload is published into the now-absent name with a hard link, which
+fails rather than replacing. An interrupted run leaves either the old bytes or the new ones, and a
+concurrent writer keeps its own. The pack's own English text is never placed inside a bundle; the
+only copy is the backup on the player's own disk.
 
 ## Development
 

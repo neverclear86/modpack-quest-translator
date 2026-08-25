@@ -38,31 +38,40 @@ per platform, and the launchers are a plain `.cmd` and a POSIX `sh` script.
 
 ### 2.2 Hazards and mitigations
 
-| #  | Hazard                                                                                           | Mitigation                                                                                                                                                                                                                                                                                                                                                        |
-| -- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1  | Bundle payload declares a traversal path (`../../saves/level.dat`)                               | Payload paths go through `normaliseEntryPath`, then an allowlist: only `config/ftbquests/quests/lang/*.snbt`                                                                                                                                                                                                                                                      |
-| 2  | Bundle payload **damaged** after packaging                                                       | `bundle-manifest.json` carries a SHA-256 per payload file; install verifies every one before touching anything. This catches a corrupt download, **not** a deliberate edit: the bundle is unsigned, so whoever can rewrite a payload can rewrite the manifest beside it (§2.3)                                                                                    |
-| 3  | User drags the wrong folder onto the launcher                                                    | The instance root must contain both `mods/` and `config/` as real directories, or install refuses (`E_INSTANCE`)                                                                                                                                                                                                                                                  |
-| 4  | Target, or a directory on the way to it, is a symlink pointing outside                           | `lstat` on the target and on every path component inside the root; a symlink is refused outright — `--force` does not override                                                                                                                                                                                                                                    |
-| 4b | `.mqt-installer/`, `backups/`, a backup, a sidecar or `state.json` is a symlink pointing outside | The same component walk, re-run at **every** read and write boundary (§5.6); directories are created a level at a time, never `mkdir --recursive`                                                                                                                                                                                                                 |
-| 5  | Resolved target escapes the instance root anyway                                                 | `realpath(target's parent)` must be a prefix of `realpath(instanceRoot)`; checked after resolution, not before                                                                                                                                                                                                                                                    |
-| 6  | Install interrupted (power loss, Ctrl+C, closed console)                                         | Every write is temp-in-destination-dir → `fsync` → `rename` → `fsync` the directory, and a flush that fails **aborts before the target is replaced** (§6.1). Backup inventory is rebuilt from on-disk sidecars, so a half-done run converges on re-run                                                                                                            |
-| 7  | Repeated install overwrites the real backup with the Japanese file                               | A file whose SHA-256 matches **any** known payload digest is never captured as an original backup (§5.3). This is the single load-bearing rule                                                                                                                                                                                                                    |
-| 8  | Backup deleted, truncated or corrupted, then uninstall runs                                      | Every backup is verified against its sidecar hash and size before use; a failure is an actionable error and **nothing is written** (`E_BACKUP`)                                                                                                                                                                                                                   |
-| 9  | Uninstall clobbers edits the user made after installing                                          | The installed file's hash must still match what was installed, else `E_TARGET_MODIFIED`. `--force` proceeds but backs the modified file up first                                                                                                                                                                                                                  |
-| 10 | We redistribute ACA's English prose                                                              | The packager refuses an overlay it cannot recognise as a finished run of this tool, and re-computes the run's per-key source digests over the payload: a file that still digests to the source key for key **is** the source and is refused (§8.1). `containsSourceProse: false` is that check's result, not a promise. Backups exist only on the user's own disk |
-| 11 | The installer executable does something other than install                                       | Compiled with `--allow-read --allow-write` only. No `--allow-net`, no `--allow-run`, no `--allow-env`, no `-A`. It structurally cannot phone home or spawn anything                                                                                                                                                                                               |
+| #  | Hazard                                                                                           | Mitigation                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1  | Bundle payload declares a traversal path (`../../saves/level.dat`)                               | Payload paths go through `normaliseEntryPath`, then an allowlist: only `config/ftbquests/quests/lang/*.snbt`                                                                                                                                                                                                                                                                                                                                                      |
+| 2  | Bundle payload **damaged** after packaging                                                       | `bundle-manifest.json` carries a SHA-256 per payload file; install verifies every one before touching anything. This catches a corrupt download, **not** a deliberate edit: the bundle is unsigned, so whoever can rewrite a payload can rewrite the manifest beside it (§2.3)                                                                                                                                                                                    |
+| 3  | User drags the wrong folder onto the launcher                                                    | The instance root must contain both `mods/` and `config/` as real directories, or install refuses (`E_INSTANCE`)                                                                                                                                                                                                                                                                                                                                                  |
+| 4  | Target, or a directory on the way to it, is a symlink pointing outside                           | `lstat` on the target and on every path component inside the root; a symlink is refused outright — `--force` does not override                                                                                                                                                                                                                                                                                                                                    |
+| 4b | `.mqt-installer/`, `backups/`, a backup, a sidecar or `state.json` is a symlink pointing outside | The same component walk, re-run at **every** read and write boundary (§5.6); directories are created a level at a time, never `mkdir --recursive`                                                                                                                                                                                                                                                                                                                 |
+| 5  | Resolved target escapes the instance root anyway                                                 | `realpath(target's parent)` must be a prefix of `realpath(instanceRoot)`; checked after resolution, not before                                                                                                                                                                                                                                                                                                                                                    |
+| 6  | Install interrupted (power loss, Ctrl+C, closed console)                                         | Every write is temp-in-destination-dir → `fsync` → publish → `fsync` the directory, and a flush that fails **aborts before the target is replaced** (§6.1). A reused backup is re-flushed before it is trusted, so a retry cannot inherit a previous run's unflushed one (§6.1). The backup inventory is rebuilt from on-disk sidecars and a half-published target is finished from the file left beside it (§6.3), so a half-done run converges on re-run        |
+| 7  | Repeated install overwrites the real backup with the Japanese file                               | A file whose SHA-256 matches **any** known payload digest is never captured as an original backup (§5.3). This is the single load-bearing rule                                                                                                                                                                                                                                                                                                                    |
+| 8  | Backup deleted, truncated or corrupted, then uninstall runs                                      | Every backup is verified against its sidecar hash and size before use, and only the backup the install record names may be read at all (§7.1); a failure is an actionable error and **nothing is written** (`E_BACKUP`)                                                                                                                                                                                                                                           |
+| 9  | Uninstall clobbers edits the user made after installing                                          | The installed file's hash must still match what was installed, else `E_TARGET_MODIFIED`. `--force` proceeds but backs the modified file up first                                                                                                                                                                                                                                                                                                                  |
+| 9b | Another process publishes its own file in the last microsecond before ours lands                 | Destructive steps are non-clobbering transactions (§6.2): the target is renamed **aside** and the payload is published into the now-absent name with `Deno.link`, which fails rather than replacing. A file that appeared in the gap wins and is left untouched; a delete only ever removes the copy it captured                                                                                                                                                  |
+| 10 | We redistribute ACA's English prose                                                              | The packager is handed the modpack archive the run read (`--source-archive`), pins it by digest, re-reads the pack's own quest file out of it, and compares the payload against **that**: same keys, and not the same text (§8.1). The manifest's own account of the source is checked against the archive rather than believed. `containsSourceProse: false` is that check's result, relative to the archive supplied. Backups exist only on the user's own disk |
+| 11 | The installer executable does something other than install                                       | Compiled with `--allow-read --allow-write` only. No `--allow-net`, no `--allow-run`, no `--allow-env`, no `-A`. It structurally cannot phone home or spawn anything                                                                                                                                                                                                                                                                                               |
 
 ### 2.3 Explicit non-goals
 
-- **Ordinary concurrent writers are handled; a hostile one is not.** Minecraft, a sync client, an
-  editor or the modpack's own updater rewriting `en_us.snbt` mid-run is caught: the target is proved
-  unchanged again after the backup is captured, before the replacement, and once more immediately
-  before the rename that publishes it, and a change aborts with `E_TARGET_MODIFIED` and the newer
-  bytes still in place (§6.2). What that cannot do is close the window between the last check and
-  the `rename`/`unlink` syscall itself — POSIX has no atomic compare-and-swap on a path, and neither
-  does Windows. A process deliberately racing that window, OS-level ACL misconfiguration, and a
-  compromised machine all remain out of scope.
+- **Concurrent writers cannot lose a write to us, hostile or not.** Minecraft, a sync client, an
+  editor or the modpack's own updater rewriting `en_us.snbt` mid-run is caught, and so is one that
+  writes in the last microsecond before we publish: nothing is ever written over, because nothing is
+  ever written _onto an occupied name_ (§6.2). A run that loses the race aborts with
+  `E_TARGET_MODIFIED` and the other process's bytes still in place. What remains out of scope is a
+  process that attacks the transaction rather than racing it — one that takes the private staging
+  name in the instant between its reservation and the rename, for instance — along with OS-level ACL
+  misconfiguration and a compromised machine. A parent directory swapped for a symlink _during_ a
+  transaction is likewise not fully closed: the walk is re-run at every boundary (§5.6), but Deno
+  exposes no `openat`/`renameat`, so the last resolution and the syscall cannot be tied to one
+  directory handle. Neither can cause an overwrite; both can cause a refusal.
+- **The protocol needs hard links, and says so instead of working around their absence.** Publishing
+  a name without replacing what is there is `Deno.link`, and nothing else Deno offers does it on
+  both platforms. A filesystem without hard links — FAT32 on a USB stick — is refused with `E_WRITE`
+  and an explanation before anything is moved, rather than being handed a `rename` and the race
+  back.
 - The executables are **unsigned**. Windows SmartScreen will show "Windows protected your PC" on
   first run; the bundle README says so in Japanese and English and explains _More info → Run
   anyway_. Code signing needs a certificate the project does not have.
@@ -120,7 +129,7 @@ and everything else stays `0644`.
   "formatVersion": 1,
   "bundleId": "all-of-create-aeronautics-2.4-ja_jp-en_us-override",
   "tool": "modpack-quest-translator",
-  "toolVersion": "1.1.1",
+  "toolVersion": "1.1.2",
   "generatedAt": "2026-08-25T00:00:00.000Z",
   "pack": { "name": "All of Create: Aeronautics", "version": "2.4" },
   "sourceLocale": "en_us",
@@ -286,7 +295,7 @@ Written next to each backup, and it — not `state.json` — is the authority on
   "capturedAt": "2026-08-25T14:22:33.000Z",
   "sha256": "…64 hex…",
   "sizeBytes": 148213,
-  "toolVersion": "1.1.1",
+  "toolVersion": "1.1.2",
   "capturedByBundleId": "all-of-create-aeronautics-2.4-ja_jp-en_us-override"
 }
 ```
@@ -314,6 +323,15 @@ digest alone already catches the common case.
 A second, cheap guard: capture deduplicates by hash. If `backups/` already holds a verified backup
 of the same target with the same SHA-256, that one is reused rather than a near-duplicate written.
 This is what makes an interrupted run converge rather than accumulate.
+
+Reuse is not free, though, and the free version was a bug. Verifying a backup proves its bytes, not
+their durability — the read is served out of the very page cache the write landed in, so a backup
+that has never touched the disk verifies perfectly. The run that left it there may be exactly the
+run a failed flush stopped. So every reused backup is **re-established** before it is trusted: the
+backup and its sidecar are re-opened and flushed, and so is the directory entry naming them. That
+covers both reuse paths — the digest match inside `capture`, and the run that adopts an identical
+`original` without capturing anything at all (§5.5). Any of those flushes failing ends the run with
+`E_BACKUP` and the target untouched.
 
 ### 5.5 A retained backup is not an installation
 
@@ -384,7 +402,7 @@ symlink is how an installer writes outside the instance.
       "originalBackup": "backups/en_us.snbt.20260825T142233Z-0.9f2a1c4b7e01.bak",
       "originalSha256": "…",
       "originalWasAbsent": false,
-      "toolVersion": "1.1.1"
+      "toolVersion": "1.1.2"
     }
   },
   "history": [
@@ -491,33 +509,70 @@ So the claim is: on Linux, the backup **and the entry naming it** are both on th
 original is replaced. On Windows it is the backup's _contents_ plus a rename that has returned, with
 NTFS's own journalling behind it. No more than that is claimed.
 
-### 6.2 The target is re-proved at every destructive boundary
+### 6.2 Nothing is ever written over
 
 The plan is built from **one** read per target. Capturing a backup, hashing it and flushing it all
 take time, and the file is not locked while they happen — so between the read that classified it and
-the rename that replaces it, the file can have become something else entirely.
+the write that replaces it, the file can have become something else entirely.
 
-The target is therefore re-read and re-hashed, and its whole path re-walked, at each boundary:
+The target is therefore re-read and re-hashed, and its whole path re-walked, after the backup is
+captured and again before the replacement. Any difference — different bytes, a file that appeared
+where there was none, one that vanished, or a parent directory that has become a symbolic link since
+the plan was made — aborts the run with `E_TARGET_MODIFIED` (or `E_INSTANCE` for the symlink) and
+nothing overwritten.
 
-1. after the backup is captured,
-2. before the replacement,
-3. inside the atomic write, after the temp file is durable and immediately before the `rename`.
+Those checks are worth having, and they are not the guarantee. A check followed by a `rename` is two
+operations on a pathname, and a pathname is not a lock: the check is over by the time the rename
+runs, and the modpack's own updater can publish its file into the gap with a rename of its own.
+Whoever writes second wins, and writing second is exactly what an installer that re-checks first
+does. `Deno.remove` has the same shape — it deletes whatever the name refers to when it runs.
 
-Any difference — different bytes, a file that appeared where there was none, one that vanished, or a
-parent directory that has become a symbolic link since the plan was made — aborts the run.
-`E_TARGET_MODIFIED` (or `E_INSTANCE` for the symlink), nothing overwritten, the newer bytes still
-there. Re-walking rather than reusing the resolved path is what makes the symlink case work: the
-containment guarantee is re-established, not remembered.
+So the destructive steps are not "check, then write over". They are transactions
+(`src/installer/publish.ts`):
 
-`--force` does not weaken this. `--force` means "the file I installed was edited and I accept losing
-that edit", decided by a human looking at an error message. It does not mean "overwrite whatever
-turns up in the next fifty milliseconds".
+1. the directory is probed for the one primitive the protocol needs (below), before anything moves;
+2. the new bytes are written to a temporary file beside the target and flushed, so publishing is one
+   operation rather than a window;
+3. whatever is at the target is `rename`d **aside**, atomically, to a name reserved with `createNew`
+   so nothing else can be holding it. That captures the bytes that were there at that instant —
+   including a write that landed a microsecond earlier — and they cannot change afterwards, because
+   the file now has a private name;
+4. those bytes are digested against the plan. If they are not what this run agreed to replace, they
+   go straight back and the run refuses;
+5. the payload is published into the target — now an absent name — with `Deno.link`, which fails
+   with `AlreadyExists` rather than replacing. A file another process created during steps 3-5
+   therefore **wins**, and this run finds out by being told no.
 
-**The residual window is the syscall itself.** Between check (3) and the `rename` — or between the
-check and the `unlink` when a restore means deleting — there is no way to make the pair atomic on
-either platform. That window is microseconds wide, and it is what §2.3 declines to defend. What is
-closed is the realistic one: the seconds-wide window an editor, a sync client or a modpack updater
-actually writes in.
+Deleting is the same protocol without step 5: once the name has been renamed aside, only the
+captured copy is ever removed, so a file created at the target afterwards cannot be deleted by us. A
+target the plan expected to be absent skips steps 3-4 and publishes no-replace directly.
+
+`Deno.link` is load-bearing because it is the only cross-platform primitive Deno offers that
+publishes a name without replacing one. Step 1 exists so that a filesystem which cannot provide it
+is refused with `E_WRITE` and an explanation _before_ the player's file has been moved anywhere.
+There is no fallback to `rename`: falling back would mean keeping the race and not saying so.
+
+`--force` does not weaken any of this. `--force` means "the file I installed was edited and I accept
+losing that edit", decided by a human looking at an error message. It does not mean "overwrite
+whatever turns up in the next fifty milliseconds".
+
+### 6.3 A run that dies mid-transaction is finished by the next one
+
+Between steps 3 and 5 the target does not exist and its contents sit beside it under a name derived
+from it — `en_us.snbt.mqt-staged-<8 hex>`. A transaction that merely _fails_ puts that back on its
+way out; only a process that dies between two syscalls can leave it.
+
+That leftover is enough on its own, so no journal is needed: the evidence is in the one directory
+that matters, and it says what it is. Before install or uninstall plans anything, each payload
+target's directory is checked for one:
+
+- the target is still absent → the captured file is what was there, and is published back into it;
+- something has taken the name since → that file is newer than anything the dead run held, so it
+  stays, and the captured bytes are preserved in `backups/` as a `modified-install` — a kind that is
+  deliberately not a restore candidate, so a displaced file is kept for a human and never silently
+  reinstated.
+
+`status` reports a leftover as a warning and changes nothing: reporting is not repairing.
 
 **Instance-root convenience:** if the given directory has no `mods/`+`config/` but its child
 `.minecraft/` or `minecraft/` does, that child is used and the resolution is printed. This covers
@@ -534,27 +589,42 @@ validate instance, resolve target, symlink + containment guards   [same as insta
 load state.json, then reconcile the backup inventory from backups/*.json sidecars
 ```
 
-| Condition                                                        | Outcome                                                                        |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| No install record **and** target hash is not a known payload     | `E_NOT_INSTALLED`. Nothing is written                                          |
-| Target present, hash ≠ recorded `installedSha256`                | `E_TARGET_MODIFIED`. Nothing is written. Hint names `--force`                  |
-| Target present, hash ≠ recorded, **`--force`**                   | Capture the current file as `kind: "modified-install"` **first**, then restore |
-| No candidate backup verifies (missing / wrong size / wrong hash) | `E_BACKUP`, listing each candidate and why it failed. Nothing is written       |
-| Best candidate is `kind: "absent"`                               | Delete the target. Directories are left alone                                  |
-| Best candidate is `kind: "original"` and verifies                | Restore atomically                                                             |
+| Condition                                                                | Outcome                                                                        |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| No install record **and** target hash is not a known payload             | `E_NOT_INSTALLED`. Nothing is written                                          |
+| Target present, hash ≠ recorded `installedSha256`                        | `E_TARGET_MODIFIED`. Nothing is written. Hint names `--force`                  |
+| Target present, hash ≠ recorded, **`--force`**                           | Capture the current file as `kind: "modified-install"` **first**, then restore |
+| The permitted backup does not verify (missing / wrong size / wrong hash) | `E_BACKUP`, saying which and why. Nothing is written                           |
+| The permitted backup is `kind: "absent"`                                 | Delete the target. Directories are left alone                                  |
+| The permitted backup is `kind: "original"` and verifies                  | Restore through the publishing transaction (§6.2)                              |
 
-**Choosing the backup** — "the correct/latest usable original backup":
+### 7.1 Only the backup the record names may be read
 
-1. The one named by the install record, if it exists and verifies.
-2. Otherwise the one whose `sha256` equals the record's `originalSha256` — a pointer whose file was
-   renamed away still names its bytes, and that beats "the newest" when several undone installs have
-   each left an original behind.
-3. Otherwise the newest by `capturedAt` among sidecars with a matching `targetRelativePath` and
-   `kind ∈ {original, absent}` that verifies.
-4. Otherwise `E_BACKUP`.
+`backups/` is append-only, so after a modpack update two `original` backups for the same file sit
+side by side: the pack's old English text and its new one. `state.json` records which of them the
+live install replaced.
 
-**Restore is atomic**: backup bytes → temp file in the target's directory → `sync` → `rename` over
-the target. A crash mid-restore leaves either the old file or the new one, never a truncated one.
+The permitted set is therefore narrow, and anything outside it is not a fallback:
+
+1. If the install record carries `originalBackup` or `originalSha256`, the permitted backups are
+   those matching the pointer — by path, or by the digest that still identifies its bytes after the
+   file has been renamed. Several backups can share that digest and that is not a guess: identical
+   bytes restore an identical file. Nothing else in the directory may be read, and a pointer that
+   matches nothing is `E_BACKUP`.
+2. If there is no pointer at all — `state.json` lost, or a record written before pointers were kept
+   — a single candidate is unambiguous and is used. **Two or more is a guess between lineages, and
+   guessing is `E_BACKUP`.**
+
+Walking on past an unverifiable pointer to "the newest that verifies" is what this replaces. It
+meant that a corrupted current backup restored the _previous_ pack release's quest file and reported
+success — destroying the prose the player is actually running, with a success message on top. The
+same rule decides which original an install adopts, so a run cannot write a pointer to a lineage it
+only guessed at either.
+
+**Restore goes through the same transaction as install** (§6.2): backup bytes prewritten and
+flushed, the current file moved aside and digested, then published no-replace. A crash mid-restore
+leaves either the old file or the new one — never a truncated one, and never somebody else's file
+overwritten.
 
 **All-or-nothing survives past planning.** Every target is planned and refused before a byte moves,
 but a _write_ can still fail at run time on the second of two files. When it does, the targets
@@ -575,14 +645,16 @@ Generic, not ACA-specific: it takes any overlay ZIP this tool produced and emits
 
 ```text
 deno task package-installer \
-  --overlay   ./dist/aca-2.4-ja_jp-en_us-override.zip \
-  --output    ./dist/aca-2.4-ja_jp-installer.zip \
-  --binaries  ./dist/bin
+  --overlay        ./dist/aca-2.4-ja_jp-en_us-override.zip \
+  --source-archive ./aca-v2.4.zip \
+  --output         ./dist/aca-2.4-ja_jp-installer.zip \
+  --binaries       ./dist/bin
 ```
 
 | Flag                                 | Behaviour                                                                                                                    |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | `--overlay <zip>`                    | Required. The raw overlay ZIP                                                                                                |
+| `--source-archive <zip>`             | Required. The modpack archive the run read, byte for byte. Without it nothing about the source can be checked                |
 | `--output <zip\|dir>`                | Required. Same `.zip`-or-directory semantics as the translator's `--output`; a directory gets `<bundle-id>-installer.zip`    |
 | `--manifest`, `--report`             | Default to the sidecars beside the overlay, then to the copies inside it                                                     |
 | `--binaries <dir>`                   | Directory holding the compiled installer executables                                                                         |
@@ -605,18 +677,36 @@ manifest recording `containsSourceProse: false`. Before any of it is copied,
   a real ISO-8601 `generatedAt`, and carry well-formed locales that differ from each other;
 - the report's `failed` list is empty, so a partial run is never packaged;
 - `keyCounts` accounts for at least one string translated, cached or fallen back;
-- the payload is the single file the run's own locale and `overrideEnglish` say it produced;
-- and the load-bearing one: a run records a digest per SNBT key of the text it _read_, and
-  re-computing those over the payload has to yield the same key set while **not** reproducing every
-  digest. A file that digests to the source key for key _is_ the source.
+- the payload is the single file the run's own locale and `overrideEnglish` say it produced.
+
+### 8.1 The source is read, not described
+
+None of the above is the load-bearing check, and the check that used to be — re-computing the
+manifest's `sourceKeyDigests` over the payload — was not one either. `sourceKeyDigests` is the
+manifest's _own account_ of text it read, and whoever writes the payload writes the manifest sitting
+beside it. Setting every digest to a string the payload cannot produce was enough to have the pack's
+own `en_us.snbt` packaged under `containsSourceProse: false`.
+
+So the source is no longer taken from the manifest. `--source-archive` is required, and:
+
+1. its bytes are hashed and must equal the manifest's `sourceArchiveSha256`, which pins "the source"
+   to a specific pile of bytes rather than to whatever was handed over;
+2. the quest lang file is **rediscovered** inside it with the same rules the translation run used,
+   and the `sourcePath` the manifest claims has to be one the search actually turned up — a manifest
+   cannot point the reader at a file of its own choosing;
+3. every per-key digest is recomputed from those bytes, and `keyCounts.keys` / `keyCounts.strings`
+   are recounted from them. A manifest that disagrees with the file it says it read is refused
+   **before the payload is looked at**;
+4. only then is the payload compared, against the source as read: same key set, and at least one key
+   whose text differs. A payload that reproduces every digest of the real source _is_ the source.
 
 `--generated-at` overrides the timestamp for reproducibility and is not a way past any of it.
 
-What this is not is a signature. A manifest is a JSON file, and someone determined to lie can write
-one that agrees with a payload they also wrote. What it does make impossible is the _accident_ —
-pointing `--overlay` at the pack's own quest file, or at a run that did not finish — which is the
-failure mode this project actually has. `containsSourceProse: false` is the result of that check and
-is described that way in the bundle README, rather than as a promise the format cannot keep.
+What this earns is stated as what it is: the guarantee is **relative to the archive supplied**. It
+establishes "this payload is a translation of the quest file in that archive", not "that archive is
+what the pack's author released" — hand the packager a fabricated archive together with a manifest
+that agrees with it, and the two will agree. Closing _that_ needs a signed provenance scheme this
+project does not have, and the bundle README says so rather than letting a boolean imply it.
 
 Supporting tasks:
 
@@ -628,7 +718,8 @@ deno task bundle                    build:installers && package-installer --bina
 ```
 
 `deno task bundle` appends its own arguments to the packaging step, so
-`deno task bundle --overlay <zip> --output <dir>` is the whole build from a clean checkout.
+`deno task bundle --overlay <zip> --source-archive <zip> --output <dir>` is the whole build from a
+clean checkout.
 
 ---
 
@@ -654,8 +745,21 @@ refactor. No test writes outside a temp directory, and nothing touches the netwo
   bytes, target unchanged, exit 0.
 - Overlay upgrade (different payload): no new `original` backup, the original pointer survives.
 - Install where the target did not exist: `absent` sentinel; uninstall deletes rather than restores.
-- Crash recovery: orphan backup with no `state.json` entry → next install reuses it; installed
-  payload with no `state.json` entry → uninstall still finds the backup via sidecars.
+- Crash recovery: orphan backup with no `state.json` entry → next install reuses it, after
+  re-flushing it; installed payload with no `state.json` entry → uninstall still finds the backup
+  via sidecars; a target left renamed aside mid-transaction → the next run puts it back, or
+  preserves it and keeps the newer file if something has taken the name since; `status` reports it
+  and writes nothing.
+- Durability under retry: a run stopped by a failed sidecar flush leaves a backup that verifies out
+  of the page cache; the next run re-flushes backup, sidecar and directory before replacing
+  anything, and refuses again if any of them still cannot be flushed.
+- Lineage, fail-closed: two `original` backups on disk and the one the record names corrupted →
+  `E_BACKUP`, and the older lineage is never restored. `state.json` removed with two candidates →
+  `E_BACKUP` rather than a guess.
+- Races in the final gap, injected deterministically: a file published into the name between the
+  move and the publish wins and is left untouched (install, `--force` install, first install,
+  uninstall restore), and a delete never removes one. A filesystem without hard links is refused
+  before anything moves.
 - Uninstall restores the exact original bytes, and the backup is **still there** afterwards.
 - Uninstall after the user edited the installed file → `E_TARGET_MODIFIED`, file untouched.
 - The same with `--force` → the edit is captured as `modified-install`, then the original is
@@ -671,6 +775,11 @@ refactor. No test writes outside a temp directory, and nothing touches the netwo
 - `bin/*` and `*.sh` carry mode `0755`; everything else `0644`.
 - An overlay containing a `.jar` or a file outside the lang directory is refused.
 - No entry anywhere in the bundle contains the original English source text.
+- Provenance against the real source archive: a manifest whose `sourceKeyDigests` are fabricated is
+  refused even with a genuine payload; a `--source-archive` that is not the one the run recorded is
+  refused; a `sourcePath` the archive does not hold is refused; `keyCounts` that disagree with the
+  archive are refused; and the pack's own English under a fabricated manifest is refused with the
+  real ACA archive supplied.
 
 ### 9.4 Binaries
 
@@ -685,6 +794,7 @@ refactor. No test writes outside a temp directory, and nothing touches the netwo
 
 `deno fmt --check`, `deno lint`, `deno check`, `deno test -A`, `deno task build`,
 `deno task build:installers`, and `deno task e2e:bundle`, which packages a bundle into a temp
-directory and installs from it with the real compiled binary — all on the latest Deno 2 only. Deno 1
-is not supported and not tested: the compatibility shim is gone from `src/util/fs.ts` (a test
-asserts no such shim is reachable) and the Deno 1 claims are gone from `DESIGN.md` and `README.md`.
+directory — refusing a source archive that is not the one the run read on the way — and installs
+from it with the real compiled binary — all on the latest Deno 2 only. Deno 1 is not supported and
+not tested: the compatibility shim is gone from `src/util/fs.ts` (a test asserts no such shim is
+reachable) and the Deno 1 claims are gone from `DESIGN.md` and `README.md`.
