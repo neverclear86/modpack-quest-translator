@@ -134,7 +134,9 @@ and everything else stays `0644`.
 ```
 
 `formatVersion` is checked on load. An unknown (higher) version is `E_BUNDLE` with "this bundle was
-made by a newer version of the tool", never a best-effort parse.
+made by a newer version of the tool", never a best-effort parse; a lower one is `E_BUNDLE` too,
+rather than a guess at what an older shape meant. `containsSourceProse` must be present and `false`,
+so a bundle that does not make the claim is refused rather than trusted.
 
 ### 3.2 Launchers locate the bundle relative to themselves
 
@@ -148,13 +150,26 @@ Never relative to the working directory — a double-clicked `.cmd` on Windows m
 
 Every expansion is quoted, so a bundle extracted to `C:\Users\ゆき\Downloads\aca ja\` works.
 
+Both launchers check that the executable is actually there before anything else and exit `10` with a
+"extract the whole ZIP first" message if it is not, because running a `.cmd` from inside a ZIP
+viewer is the most common way this fails.
+
 The Windows launchers accept a **drag-and-drop**: dropped paths arrive as `%1` (and `%2`… if several
 were dropped — only the first is used, with a warning). With no argument they `set /p` prompt for a
 path. `chcp 65001` first so Japanese output renders, and `pause` last so a double-clicked window
 does not vanish before the user can read the result. `exit /b` propagates the real exit code.
 
+A dropped path ending in a backslash would escape the closing quote of the `--instance "…"` argument
+and hand the installer the rest of the line, so the launcher appends a `.` to it first; that
+resolves to the same directory and needs no special case for a drive root.
+
 `INSTALL-LINUX.sh` uses `set -eu`, `chmod +x` on the binary defensively (some GUI unzip tools drop
-the mode bit), accepts the instance path as `$1`, and otherwise prompts on the TTY.
+the mode bit), accepts the instance path as `$1`, and otherwise prompts on the TTY — a closed stdin
+there is a cancellation, not a crash. It expands a leading `~` itself, because the installer is
+compiled without `--allow-env` and so cannot read `$HOME`. Any remaining arguments are forwarded to
+the executable as `"$@"`, so `./UNINSTALL-LINUX.sh <instance> --force` works; the `.cmd` forwards
+nothing beyond the dropped path, so on Windows `--force` means calling
+`bin\mqt-installer-windows-x86_64.exe` directly.
 
 ---
 
@@ -163,14 +178,21 @@ the mode bit), accepts the instance path as `$1`, and otherwise prompts on the T
 One executable, subcommand-shaped, compiled from `src/installer/main.ts`.
 
 ```text
-mqt-installer install   --bundle <dir> [--instance <path>] [--force] [--json] [--yes]
-mqt-installer uninstall --bundle <dir> [--instance <path>] [--force] [--json] [--yes]
-mqt-installer status    --bundle <dir> [--instance <path>] [--json]
+mqt-installer install   [--bundle <dir>] [--instance <path>] [--force] [--json] [--yes]
+mqt-installer uninstall [--bundle <dir>] [--instance <path>] [--force] [--json] [--yes]
+mqt-installer status    [--bundle <dir>] [--instance <path>] [--json]
 ```
+
+`--bundle` may be omitted: the executable lives at `<bundle>/bin/<exe>`, so the bundle is found two
+levels up from `Deno.execPath()`, and a copy of the executable placed beside the manifest works too.
+Neither candidate holding `bundle-manifest.json` is `E_INVALID_INPUT` with the flag named — guessing
+any further would be guessing.
 
 `--instance` may be omitted when stdin is a TTY, in which case the path is prompted for — that is
 the double-click flow. In a non-TTY it is required, so scripts and tests never hang. `--yes` skips
-the "about to replace X, continue?" confirmation, which is otherwise shown interactively.
+the "about to replace X, continue?" confirmation, which is otherwise shown interactively; a
+cancelled prompt writes nothing and exits 0. `status` refuses `--force` and `--yes` outright,
+because it never changes anything.
 
 ### 4.1 Exit codes
 
@@ -272,12 +294,32 @@ This is what makes an interrupted run converge rather than accumulate.
     }
   },
   "history": [
-    { "event": "uninstall", "target": "…", "at": "…", "restoredFrom": "backups/…" }
+    {
+      "event": "install",
+      "target": "…",
+      "at": "…",
+      "bundleId": "…",
+      "installedSha256": "…",
+      "backup": "backups/…"
+    },
+    {
+      "event": "uninstall",
+      "target": "…",
+      "at": "…",
+      "restoredFrom": "backups/…",
+      "deleted": false
+    }
   ]
 }
 ```
 
-Written atomically. Losing it is recoverable: sidecars still identify every backup and its target.
+Written atomically, and trimmed to the most recent 200 events so a much-reinstalled instance cannot
+grow the file without bound. Losing it is recoverable: sidecars still identify every backup and its
+target. A `state.json` that is not readable JSON, or whose records do not parse, is a **warning**
+and an empty in-memory state rather than a failure: the sidecars are the authority, and refusing to
+run because a bookkeeping file is corrupt would strand the user with no way to uninstall. The one
+exception is a **higher** `formatVersion`, which is `E_INSTANCE` — rewriting it would discard
+whatever a newer installer recorded there.
 
 ---
 
@@ -295,12 +337,19 @@ resolve target ─┬─ payload path not under config/ftbquests/quests/lang/, o
 classify current target
 ```
 
-| Classification                                                 | Action                                                                                                                                 |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| **absent** — no file there                                     | Record an `absent` sentinel backup, write payload → `INSTALLED`                                                                        |
-| **payload-current** — hash equals this bundle's payload        | **Idempotent.** No backup, no rewrite. Report "already installed", exit 0. `--force` rewrites the same bytes but still takes no backup |
-| **payload-known** — hash equals a previously installed payload | Overlay upgrade. **No backup** (it is not original). Keep the existing `originalBackup` pointer, write the new payload → `INSTALLED`   |
-| **foreign** — anything else                                    | Capture it as `kind: "original"` (or reuse an identical existing backup), then write payload → `INSTALLED`                             |
+| Classification                                                 | Action                                                                                                                                                                    |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **payload-current** — hash equals this bundle's payload        | **Idempotent.** No backup, no rewrite. Report "already installed", exit 0. `--force` rewrites the same bytes but still takes no backup                                    |
+| **absent** — no file there                                     | Record an `absent` sentinel backup, write payload → `INSTALLED`. If an `original` is already preserved for this target, keep it and record nothing new                    |
+| **payload-known** — hash equals a previously installed payload | Overlay upgrade. **No backup** (it is not original). Keep the existing `originalBackup` pointer, write the new payload → `INSTALLED`                                      |
+| **preserved-original** — hash equals a backup we already hold  | The run that finishes an install interrupted between capturing the backup and writing the payload. No second backup; write payload → `INSTALLED`                          |
+| **modified** — foreign, but an original is already preserved   | Whatever is here arrived after we installed. `E_TARGET_MODIFIED`, nothing written. `--force` captures it as `kind: "modified-install"` **first**, then writes the payload |
+| **foreign** — anything else, and no original preserved yet     | First contact with a file we did not write: capture it as `kind: "original"` (or reuse an identical existing backup), then write payload → `INSTALLED`                    |
+
+The order matters: **payload-current** is tested before anything else, so a file that is one of our
+payloads can never reach the capture branches. **modified** is the reason `install` — not only
+`uninstall` — can exit 12: an edited installed file is not an original, and silently overwriting the
+player's edit would be as bad as silently overwriting the pack's.
 
 Write order, chosen for crash safety:
 
@@ -367,12 +416,13 @@ deno task package-installer \
 | Flag                                 | Behaviour                                                                                                                    |
 | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
 | `--overlay <zip>`                    | Required. The raw overlay ZIP                                                                                                |
-| `--output <zip\|dir>`                | Required. Same `.zip`-or-directory semantics as the translator's `--output`                                                  |
+| `--output <zip\|dir>`                | Required. Same `.zip`-or-directory semantics as the translator's `--output`; a directory gets `<bundle-id>-installer.zip`    |
 | `--manifest`, `--report`             | Default to the sidecars beside the overlay, then to the copies inside it                                                     |
 | `--binaries <dir>`                   | Directory holding the compiled installer executables                                                                         |
 | `--windows-binary`, `--linux-binary` | Explicit paths, overriding `--binaries`                                                                                      |
 | `--no-binaries`                      | Build a bundle without executables — for packaging tests only; the bundle README and manifest both say it is not installable |
-| `--bundle-id <id>`                   | Overrides the default, which is the overlay's file stem                                                                      |
+| `--bundle-id <id>`                   | Overrides the default, which is the overlay's file stem, reduced to `[A-Za-z0-9._-]`                                         |
+| `--generated-at <iso>`               | Overrides the timestamp, which otherwise comes from the translation manifest — that is what keeps packaging deterministic    |
 | `--force`, `--json`, `--quiet`       | As in the translator                                                                                                         |
 
 The packager **only** copies entries the overlay itself contains under
@@ -386,8 +436,11 @@ Supporting tasks:
 deno task build:installer:linux     deno compile --target x86_64-unknown-linux-gnu …
 deno task build:installer:windows   deno compile --target x86_64-pc-windows-msvc  …
 deno task build:installers          both of the above
-deno task bundle                    build:installers && package-installer
+deno task bundle                    build:installers && package-installer --binaries dist/bin
 ```
+
+`deno task bundle` appends its own arguments to the packaging step, so
+`deno task bundle --overlay <zip> --output <dir>` is the whole build from a clean checkout.
 
 ---
 
@@ -443,7 +496,7 @@ refactor. No test writes outside a temp directory, and nothing touches the netwo
 ### 9.5 Acceptance gates
 
 `deno fmt --check`, `deno lint`, `deno check`, `deno test -A`, `deno task build`,
-`deno task build:installers`, and a packaging smoke test that produces a bundle in a temp directory
-and installs from it — all on the latest Deno 2 only. Deno 1 is no longer supported or tested; the
-compatibility shim in `src/util/fs.ts` and the Deno 1 claims in `DESIGN.md` and `README.md` are
-removed as part of this work.
+`deno task build:installers`, and `deno task e2e:bundle`, which packages a bundle into a temp
+directory and installs from it with the real compiled binary — all on the latest Deno 2 only. Deno 1
+is not supported and not tested: the compatibility shim is gone from `src/util/fs.ts` (a test
+asserts no such shim is reachable) and the Deno 1 claims are gone from `DESIGN.md` and `README.md`.
