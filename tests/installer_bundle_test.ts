@@ -125,6 +125,67 @@ Deno.test("a manifest claiming to contain source prose is refused", () => {
   parseFails({ containsSourceProse: true }, "containsSourceProse");
 });
 
+Deno.test("a manifest whose descriptive fields are nonsense is refused", () => {
+  // The write allowlist holds whatever the manifest says, but a bundle that
+  // cannot describe itself coherently is one this installer should not be
+  // acting on -- and "unknown" is a worse answer to give the player than a
+  // refusal.
+  parseFails({ tool: "someone-elses-packager" }, "tool");
+  parseFails({ toolVersion: "unreleased" }, "toolVersion");
+  parseFails({ generatedAt: "yesterday" }, "generatedAt");
+  parseFails({ generatedAt: "2026-13-45T99:00:00.000Z" }, "generatedAt");
+  parseFails({ sourceLocale: "../../etc" }, "sourceLocale");
+  parseFails({ targetLocale: "japanese" }, "targetLocale");
+  // A "translation" into the language it was read from is a copy.
+  parseFails({ targetLocale: "en_us" }, "targetLocale");
+});
+
+Deno.test("a bundleId that is not a plain name is refused", () => {
+  // It is never used as a path here, but it is written into state.json, into
+  // every backup sidecar, and printed back to the player. A control character
+  // or a screenful of text belongs in none of those.
+  parseFails({ bundleId: "" }, "bundleId");
+  parseFails({ bundleId: "aca\nInstalled: nothing was changed" }, "bundleId");
+  parseFails({ bundleId: "../../elsewhere" }, "bundleId");
+  parseFails({ bundleId: "x".repeat(200) }, "bundleId");
+});
+
+Deno.test("a manifest whose payload does not match its own locales is refused", () => {
+  // overrideEnglish means the translated text ships under the source locale's
+  // name. A bundle that says so and then carries something else is malformed.
+  parseFails(
+    { payload: [payloadOf("config/ftbquests/quests/lang/ja_jp.snbt")] },
+    "en_us.snbt",
+  );
+  parseFails(
+    {
+      overrideEnglish: false,
+      payload: [payloadOf("config/ftbquests/quests/lang/en_us.snbt")],
+    },
+    "ja_jp.snbt",
+  );
+});
+
+Deno.test("a binary entry that could name a path outside bin/ is refused", () => {
+  for (
+    const binary of [
+      { path: "../../evil.exe", target: "x86_64-pc-windows-msvc", sha256: "a".repeat(64) },
+      { path: "/usr/bin/sh", target: "x86_64-unknown-linux-gnu", sha256: "a".repeat(64) },
+      { path: "bin/nested/exe", target: "x86_64-unknown-linux-gnu", sha256: "a".repeat(64) },
+      { path: "bin/mqt", target: "x86_64-unknown-linux-gnu", sha256: "not a digest" },
+      { path: "bin/mqt", target: "../elsewhere", sha256: "a".repeat(64) },
+    ]
+  ) {
+    const error = assertThrows(
+      () => parseBundleManifest(JSON.stringify(manifest({ binaries: [binary] }))),
+      AppError,
+      undefined,
+      `expected ${JSON.stringify(binary)} to be refused`,
+    );
+    assertEquals(error.code, "E_BUNDLE");
+  }
+});
+
 function payloadOf(path: string): Record<string, unknown> {
   return { path, sha256: "a".repeat(64), sizeBytes: 10 };
 }

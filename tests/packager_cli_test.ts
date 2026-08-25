@@ -260,6 +260,27 @@ Deno.test("--bundle-id overrides the name derived from the overlay", async () =>
   });
 });
 
+Deno.test("a --bundle-id that is not a plain name is refused with a usable message", async () => {
+  // It becomes the bundle's top-level directory and the id the installer writes
+  // into state.json, so it is checked here rather than left to surface as a ZIP
+  // writer complaint about an unsafe entry path.
+  await withHarness(async (h) => {
+    for (const id of ["../evil", "aca ja", "aca\nInstalled", ""]) {
+      const code = await invoke(h, [
+        "--overlay",
+        h.overlay,
+        "--output",
+        `${h.dir}/id-${encodeURIComponent(id)}.zip`,
+        "--no-binaries",
+        "--bundle-id",
+        id,
+      ]);
+      assertEquals(code, 10, `expected --bundle-id ${JSON.stringify(id)} to be refused`);
+      assertStringIncludes(h.stderr.join("\n"), "--bundle-id");
+    }
+  });
+});
+
 Deno.test("a missing overlay file is reported, not thrown as a stack trace", async () => {
   await withHarness(async (h) => {
     const code = await invoke(h, [

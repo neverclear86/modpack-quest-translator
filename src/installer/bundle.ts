@@ -15,6 +15,9 @@ export const PAYLOAD_DIR = "payload";
  */
 export const QUEST_LANG_DIR = "config/ftbquests/quests/lang";
 
+/** The only tool whose bundles this installer will act on. */
+export const TOOL_NAME = "modpack-quest-translator";
+
 /**
  * The one file a run installs, and its name.
  *
@@ -24,11 +27,27 @@ export const QUEST_LANG_DIR = "config/ftbquests/quests/lang";
  * provenance check and this parser all have to agree on that rule, so it is
  * written once: a disagreement means a genuine overlay gets refused.
  */
+/**
+ * A bundle id is a plain short name, and both ends check the same rule.
+ *
+ * It is the bundle's top-level directory, so the packager needs it safe as a
+ * path; it is also written into `state.json`, into every backup sidecar and
+ * into the report the player reads, so the installer needs it free of control
+ * characters and of any length worth truncating.
+ */
+export function isPlainBundleId(value: string): boolean {
+  return /^[A-Za-z0-9._-]{1,120}$/.test(value);
+}
+
 export function shippedLangPath(
   meta: { targetLocale: string; overrideEnglish: boolean },
 ): string {
   return `${QUEST_LANG_DIR}/${meta.overrideEnglish ? "en_us" : meta.targetLocale}.snbt`;
 }
+
+const LOCALE = /^[a-z]{2,3}_[a-z]{2}$/;
+const SEMVER = /^\d+\.\d+\.\d+(?:[-+].*)?$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 
 export interface BundlePayloadEntry {
   /** Instance-relative destination, always under QUEST_LANG_DIR. */
@@ -172,6 +191,60 @@ export function parseBundleManifest(text: string): BundleManifest {
     throw bundleError(`${BUNDLE_MANIFEST_NAME} has a non-array binaries field`);
   }
 
+  // Never a path here, but it lands in state.json, in every backup sidecar and
+  // in the report the player reads, so it stays a plain short name.
+  const bundleId = requiredString(body, "bundleId");
+  if (!isPlainBundleId(bundleId)) {
+    throw bundleError(
+      `${BUNDLE_MANIFEST_NAME} has the unusable bundleId ${JSON.stringify(bundleId)}`,
+      { hint: TAMPERED_HINT },
+    );
+  }
+  const tool = requiredString(body, "tool");
+  if (tool !== TOOL_NAME) {
+    throw bundleError(
+      `${BUNDLE_MANIFEST_NAME} names the tool ${JSON.stringify(tool)}, not ${TOOL_NAME}`,
+      { hint: "This installer only acts on bundles this tool produced." },
+    );
+  }
+  const toolVersion = requiredString(body, "toolVersion");
+  if (!SEMVER.test(toolVersion)) {
+    throw bundleError(
+      `${BUNDLE_MANIFEST_NAME} has the unusable toolVersion ${JSON.stringify(toolVersion)}`,
+      { hint: TAMPERED_HINT },
+    );
+  }
+  const generatedAt = requiredString(body, "generatedAt");
+  const parsedAt = new Date(generatedAt);
+  if (Number.isNaN(parsedAt.getTime()) || parsedAt.toISOString() !== generatedAt) {
+    throw bundleError(
+      `${BUNDLE_MANIFEST_NAME} has the unusable generatedAt ${JSON.stringify(generatedAt)}`,
+      { hint: "Expected an ISO-8601 timestamp such as 2026-08-25T00:00:00.000Z." },
+    );
+  }
+  const sourceLocale = localeField(body, "sourceLocale");
+  const targetLocale = localeField(body, "targetLocale");
+  if (sourceLocale === targetLocale) {
+    throw bundleError(
+      `${BUNDLE_MANIFEST_NAME} has targetLocale ${targetLocale}, which is also its sourceLocale ` +
+        `-- that describes a copy of the pack's own file, not a translation of it`,
+      { hint: TAMPERED_HINT },
+    );
+  }
+
+  // The payload a bundle carries has to be the one it says it is, so a manifest
+  // cannot describe a Japanese translation while shipping something else.
+  const overrideEnglish = body.overrideEnglish === true;
+  const expected = shippedLangPath({ targetLocale, overrideEnglish });
+  if (!payload.some((entry) => entry.path === expected)) {
+    throw bundleError(
+      `${BUNDLE_MANIFEST_NAME} declares overrideEnglish: ${overrideEnglish} with locales ` +
+        `${sourceLocale} -> ${targetLocale}, so it should install ${expected}, but its payload ` +
+        `is ${payload.map((entry) => entry.path).join(", ")}`,
+      { hint: TAMPERED_HINT },
+    );
+  }
+
   const packRaw = body.pack;
   const pack = typeof packRaw === "object" && packRaw !== null && !Array.isArray(packRaw)
     ? packRaw as Record<string, unknown>
@@ -179,21 +252,32 @@ export function parseBundleManifest(text: string): BundleManifest {
 
   return {
     formatVersion,
-    bundleId: requiredString(body, "bundleId"),
-    tool: requiredString(body, "tool"),
-    toolVersion: requiredString(body, "toolVersion"),
-    generatedAt: requiredString(body, "generatedAt"),
+    bundleId,
+    tool,
+    toolVersion,
+    generatedAt,
     pack: {
       name: optionalString(pack, "name"),
       version: optionalString(pack, "version"),
     },
-    sourceLocale: requiredString(body, "sourceLocale"),
-    targetLocale: requiredString(body, "targetLocale"),
-    overrideEnglish: body.overrideEnglish === true,
+    sourceLocale,
+    targetLocale,
+    overrideEnglish,
     containsSourceProse: false,
     payload,
     binaries: binariesRaw.map((entry, index) => parseBinaryEntry(entry, index)),
   };
+}
+
+function localeField(body: Record<string, unknown>, field: string): string {
+  const value = requiredString(body, field);
+  if (!LOCALE.test(value)) {
+    throw bundleError(
+      `${BUNDLE_MANIFEST_NAME} has the unusable ${field} ${JSON.stringify(value)}`,
+      { hint: "A locale looks like en_us or ja_jp." },
+    );
+  }
+  return value;
 }
 
 function parsePayloadEntry(entry: unknown, index: number): BundlePayloadEntry {
@@ -213,16 +297,38 @@ function parsePayloadEntry(entry: unknown, index: number): BundlePayloadEntry {
   return { path, sha256, sizeBytes };
 }
 
+/**
+ * A binary entry is only ever reported, never opened by this installer -- but
+ * the bundle README prints these paths, and a name that reads as a path is one
+ * a reader could be talked into running.
+ */
 function parseBinaryEntry(entry: unknown, index: number): BundleBinaryEntry {
   if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
     throw bundleError(`binaries[${index}] is not an object`);
   }
   const body = entry as Record<string, unknown>;
-  return {
-    path: requiredString(body, "path", `binaries[${index}].path`),
-    target: requiredString(body, "target", `binaries[${index}].target`),
-    sha256: requiredString(body, "sha256", `binaries[${index}].sha256`),
-  };
+  const path = requiredString(body, "path", `binaries[${index}].path`);
+  if (!/^bin\/[A-Za-z0-9._-]+$/.test(path)) {
+    throw bundleError(
+      `binaries[${index}].path is ${JSON.stringify(path)}, which is not a plain name inside bin/`,
+      { hint: TAMPERED_HINT },
+    );
+  }
+  const target = requiredString(body, "target", `binaries[${index}].target`);
+  if (!/^[A-Za-z0-9._-]+$/.test(target)) {
+    throw bundleError(
+      `binaries[${index}].target is ${JSON.stringify(target)}, which is not a compile target`,
+      { hint: TAMPERED_HINT },
+    );
+  }
+  const sha256 = requiredString(body, "sha256", `binaries[${index}].sha256`);
+  if (!SHA256.test(sha256)) {
+    throw bundleError(
+      `binaries[${index}].sha256 is not a lower-case SHA-256 digest`,
+      { hint: TAMPERED_HINT },
+    );
+  }
+  return { path, target, sha256 };
 }
 
 function requiredString(

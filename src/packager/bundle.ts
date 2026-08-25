@@ -6,6 +6,7 @@ import {
   BUNDLE_MANIFEST_NAME,
   type BundleBinaryEntry,
   type BundleManifest,
+  isPlainBundleId,
   PAYLOAD_DIR,
   QUEST_LANG_DIR,
 } from "../installer/bundle.ts";
@@ -78,6 +79,16 @@ function packageError(message: string, hint?: string): AppError {
  * That is not a signature and is not claimed as one; see `provenance.ts`.
  */
 export async function buildInstallerBundle(args: PackageBundleArgs): Promise<BuiltBundle> {
+  // It becomes the bundle's top-level directory. Checked here rather than left
+  // to the ZIP writer, whose complaint about an unsafe entry path would not
+  // tell anyone which flag to change.
+  if (!isPlainBundleId(args.bundleId)) {
+    throw packageError(
+      `--bundle-id ${JSON.stringify(args.bundleId)} is not a plain name`,
+      "Use letters, digits, dot, dash and underscore, up to 120 characters.",
+    );
+  }
+
   const overlay = await readZip(args.overlay);
 
   const payloads = new Map<string, Uint8Array>();
