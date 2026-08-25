@@ -265,7 +265,10 @@ Deno.test("a --bundle-id that is not a plain name is refused with a usable messa
   // into state.json, so it is checked here rather than left to surface as a ZIP
   // writer complaint about an unsafe entry path.
   await withHarness(async (h) => {
-    for (const id of ["../evil", "aca ja", "aca\nInstalled", ""]) {
+    // "." and ".." carry no separator, so a plain character-class check lets
+    // them through and the run dies as an unsafe-entry-path complaint from the
+    // ZIP writer -- the exact message this check exists to replace.
+    for (const id of ["../evil", "aca ja", "aca\nInstalled", "", ".", "..", "..."]) {
       const code = await invoke(h, [
         "--overlay",
         h.overlay,

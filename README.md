@@ -475,10 +475,13 @@ The installer executable is held to the same standard, and is compiled with
 --allow-write` and nothing else — no `--allow-net`, `--allow-run` or `--allow-env` —
 so it structurally cannot phone home or spawn anything. It refuses a payload path outside
 `config/ftbquests/quests/lang/`, verifies every payload digest against `bundle-manifest.json` before
-touching a file, refuses a symlinked target or one whose resolved parent is outside the instance
-root (`--force` does not override any of those), and writes every file temp-then-`rename` so an
-interrupted run leaves either the old bytes or the new ones. The pack's own English text is never
-placed inside a bundle; the only copy is the backup on the player's own disk.
+touching a file, refuses a manifest that cannot describe itself coherently — a foreign tool name, a
+`toolVersion` that is not a semver, a `generatedAt` that is not a real timestamp, locales that are
+malformed or identical, a `bundleId` carrying a path separator — refuses a symlinked target or one
+whose resolved parent is outside the instance root (`--force` does not override any of those), and
+writes every file temp-then-`rename` so an interrupted run leaves either the old bytes or the new
+ones. The pack's own English text is never placed inside a bundle; the only copy is the backup on
+the player's own disk.
 
 ## Development
 

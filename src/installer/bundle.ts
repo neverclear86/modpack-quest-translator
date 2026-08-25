@@ -36,6 +36,11 @@ export const TOOL_NAME = "modpack-quest-translator";
  * characters and of any length worth truncating.
  */
 export function isPlainBundleId(value: string): boolean {
+  // A dot-only name is built entirely from allowed characters but names a
+  // directory rather than a bundle: as the bundle's top-level entry it makes
+  // every path escape the archive root, and printed back to a player it reads
+  // as a path. Refuse it here, where the message can name the flag to change.
+  if (/^\.+$/.test(value)) return false;
   return /^[A-Za-z0-9._-]{1,120}$/.test(value);
 }
 

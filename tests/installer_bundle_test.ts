@@ -148,6 +148,11 @@ Deno.test("a bundleId that is not a plain name is refused", () => {
   parseFails({ bundleId: "aca\nInstalled: nothing was changed" }, "bundleId");
   parseFails({ bundleId: "../../elsewhere" }, "bundleId");
   parseFails({ bundleId: "x".repeat(200) }, "bundleId");
+  // Dot-only names are made of allowed characters but name a directory rather
+  // than a bundle, and read as a path to anyone shown one.
+  parseFails({ bundleId: "." }, "bundleId");
+  parseFails({ bundleId: ".." }, "bundleId");
+  parseFails({ bundleId: "..." }, "bundleId");
 });
 
 Deno.test("a manifest whose payload does not match its own locales is refused", () => {

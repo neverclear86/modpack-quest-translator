@@ -120,7 +120,7 @@ and everything else stays `0644`.
   "formatVersion": 1,
   "bundleId": "all-of-create-aeronautics-2.4-ja_jp-en_us-override",
   "tool": "modpack-quest-translator",
-  "toolVersion": "1.1.0",
+  "toolVersion": "1.1.1",
   "generatedAt": "2026-08-25T00:00:00.000Z",
   "pack": { "name": "All of Create: Aeronautics", "version": "2.4" },
   "sourceLocale": "en_us",
@@ -153,6 +153,28 @@ and everything else stays `0644`.
 made by a newer version of the tool", never a best-effort parse; a lower one is `E_BUNDLE` too,
 rather than a guess at what an older shape meant. `containsSourceProse` must be present and `false`,
 so a bundle that does not make the claim is refused rather than trusted.
+
+The descriptive fields are validated too, rather than read as bare strings and defaulted when
+absent. None of them can steer a write — the payload path allowlist is checked separately, below —
+but a bundle that cannot say coherently what it is gets refused rather than reported in its own
+words, because those words reach the player through the install report, `state.json` and every
+backup sidecar:
+
+- `tool` must be this tool's name, and `toolVersion` a semver;
+- `generatedAt` must be an ISO-8601 timestamp that survives a `Date` round trip, so neither
+  "yesterday" nor `2026-13-45T99:00:00.000Z` is accepted;
+- `sourceLocale` and `targetLocale` must be well-formed and must differ from each other;
+- `payload` must name the single file the manifest's own locales and `overrideEnglish` imply, by the
+  same rule the packager used to produce it (§7.2 of DESIGN.md: override mode ships as `en_us`
+  whatever locale was read);
+- `bundleId` must be a plain short name: 1–120 characters of `[A-Za-z0-9._-]`, and never a dot-only
+  name like `.` or `..`, which is built from allowed characters but names a directory. The packager
+  checks the same predicate before building, so `--bundle-id ../evil` — or `--bundle-id ..` — names
+  the flag to change instead of surfacing later as the ZIP writer complaining about an unsafe entry
+  path;
+- each `binaries` entry must be a plain name inside `bin/`, a compile target and a lower-case
+  SHA-256. The installer never opens them, but the bundle README prints those paths, and a name that
+  reads as a path is one a reader could be talked into running.
 
 ### 3.2 Launchers locate the bundle relative to themselves
 
@@ -264,7 +286,7 @@ Written next to each backup, and it — not `state.json` — is the authority on
   "capturedAt": "2026-08-25T14:22:33.000Z",
   "sha256": "…64 hex…",
   "sizeBytes": 148213,
-  "toolVersion": "1.1.0",
+  "toolVersion": "1.1.1",
   "capturedByBundleId": "all-of-create-aeronautics-2.4-ja_jp-en_us-override"
 }
 ```
@@ -362,7 +384,7 @@ symlink is how an installer writes outside the instance.
       "originalBackup": "backups/en_us.snbt.20260825T142233Z-0.9f2a1c4b7e01.bak",
       "originalSha256": "…",
       "originalWasAbsent": false,
-      "toolVersion": "1.1.0"
+      "toolVersion": "1.1.1"
     }
   },
   "history": [
@@ -398,7 +420,10 @@ whatever a newer installer recorded there.
 ## 6. Install state machine
 
 ```text
-validate bundle ─┬─ manifest unreadable / bad formatVersion / payload hash mismatch → E_BUNDLE
+validate bundle ─┬─ manifest unreadable / bad formatVersion → E_BUNDLE
+                 ├─ manifest cannot describe itself (tool, toolVersion, generatedAt,
+                 │    locales, bundleId, binaries, payload name) → E_BUNDLE
+                 ├─ payload hash or size mismatch → E_BUNDLE
                  └─ ok
 validate instance ─┬─ no mods/ or no config/ → E_INSTANCE (with the auto-descend hint below)
                    └─ ok
@@ -614,13 +639,13 @@ refactor. No test writes outside a temp directory, and nothing touches the netwo
 
 ### 9.1 Pure logic (runs on Linux, covers Windows behaviour)
 
-| Area                | Assertions                                                                                                                                                                                   |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Bundle manifest     | Round-trip; unknown `formatVersion` rejected; payload hash mismatch rejected; `..`/absolute/drive payload paths rejected; payload outside the lang directory rejected                        |
-| Windows path logic  | Quoted drag-and-drop argv; a path with spaces and with non-ASCII; trailing `\`; `C:\` root preserved; `C:relative` rejected; UNC handled; separator normalisation                            |
-| Launcher generation | `.cmd` uses `%~dp0` and never `cd`; every expansion quoted; `chcp 65001`; `pause`; `exit /b` propagates the code. `.sh` has `set -eu`, resolves its own directory, `chmod +x`, quotes `"$@"` |
-| Instance validation | Missing `mods/`; missing `config/`; a file where a directory is expected; auto-descend into `.minecraft`/`minecraft`; symlinked target refused; target escaping the root refused             |
-| Backup naming       | Collision-safe under a frozen clock; sidecar contents; dedupe by hash; verification fails on truncation and on a hash mismatch                                                               |
+| Area                | Assertions                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bundle manifest     | Round-trip; unknown `formatVersion` rejected; payload hash mismatch rejected; `..`/absolute/drive payload paths rejected; payload outside the lang directory rejected; a manifest that cannot describe itself rejected — foreign `tool`, non-semver `toolVersion`, unparseable `generatedAt`, malformed or equal locales, a `bundleId` carrying a path, a newline or only dots, a binary entry outside `bin/`, a payload name its own locales do not imply |
+| Windows path logic  | Quoted drag-and-drop argv; a path with spaces and with non-ASCII; trailing `\`; `C:\` root preserved; `C:relative` rejected; UNC handled; separator normalisation                                                                                                                                                                                                                                                                                          |
+| Launcher generation | `.cmd` uses `%~dp0` and never `cd`; every expansion quoted; `chcp 65001`; `pause`; `exit /b` propagates the code. `.sh` has `set -eu`, resolves its own directory, `chmod +x`, quotes `"$@"`                                                                                                                                                                                                                                                               |
+| Instance validation | Missing `mods/`; missing `config/`; a file where a directory is expected; auto-descend into `.minecraft`/`minecraft`; symlinked target refused; target escaping the root refused                                                                                                                                                                                                                                                                           |
+| Backup naming       | Collision-safe under a frozen clock; sidecar contents; dedupe by hash; verification fails on truncation and on a hash mismatch                                                                                                                                                                                                                                                                                                                             |
 
 ### 9.2 State machines (real temp directories)
 
