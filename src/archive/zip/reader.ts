@@ -38,6 +38,8 @@ export interface ZipEntry {
   readonly uncompressedSize: number;
   readonly method: number;
   readonly crc32: number;
+  /** Unix permission bits from the external attributes, 0 when not Unix-made. */
+  readonly unixMode: number;
 }
 
 export interface ZipArchive {
@@ -216,6 +218,7 @@ export async function readZip(
       uncompressedSize,
       method,
       crc32: crc,
+      unixMode: (externalAttributes >>> 16) & 0o777,
       localHeaderOffset,
       flag,
     };

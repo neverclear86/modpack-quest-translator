@@ -104,3 +104,23 @@ Deno.test("string content is accepted and encoded as UTF-8", async () => {
   const zip = await readZip(await writeZip([{ path: "t.txt", text: "héllo" }]));
   assertEquals(await zip.readText("t.txt"), "héllo");
 });
+
+Deno.test("an entry carries the Unix mode it asks for, defaulting to 0644", async () => {
+  const bytes = await writeZip([
+    { path: "bin/installer", data: new Uint8Array([1, 2, 3]), mode: 0o755 },
+    { path: "README.md", text: "hello" },
+  ]);
+  const archive = await readZip(bytes);
+  const modes = Object.fromEntries(archive.entries.map((e) => [e.path, e.unixMode]));
+  assertEquals(modes, { "bin/installer": 0o755, "README.md": 0o644 });
+});
+
+Deno.test("an implausible Unix mode is refused", async () => {
+  for (const mode of [-1, 0o1000, 1.5]) {
+    await assertRejects(
+      () => writeZip([{ path: "a.txt", text: "x", mode }]),
+      AppError,
+      "mode",
+    );
+  }
+});

@@ -7,6 +7,12 @@ export interface ZipWriteEntry {
   data?: Uint8Array;
   /** Convenience alternative to `data`; encoded as UTF-8. */
   text?: string;
+  /**
+   * Unix permission bits, default 0644. The installer bundle needs 0755 on the
+   * compiled binary and the two shell launchers: a `.sh` that arrives without
+   * its execute bit is a support ticket, not a security feature.
+   */
+  mode?: number;
 }
 
 /**
@@ -16,8 +22,9 @@ export interface ZipWriteEntry {
 const DOS_TIME = 0;
 const DOS_DATE = 0x0021;
 
-/** Regular file, 0644. */
-const EXTERNAL_ATTRIBUTES = (0o100644 << 16) >>> 0;
+const DEFAULT_MODE = 0o644;
+/** Regular-file type bits; the permission bits are OR-ed in per entry. */
+const S_IFREG = 0o100000;
 const VERSION_MADE_BY = 0x031E; // Unix, spec 3.0
 const VERSION_NEEDED = 20;
 const FLAG_UTF8 = 0x0800;
@@ -98,8 +105,15 @@ export async function writeZip(entries: readonly ZipWriteEntry[]): Promise<Uint8
     if (path.endsWith("/")) {
       throw new AppError("E_WRITE", `Refusing to write a directory entry: ${entry.path}`);
     }
+    const mode = entry.mode ?? DEFAULT_MODE;
+    if (!Number.isInteger(mode) || mode < 0 || mode > 0o777) {
+      throw new AppError(
+        "E_WRITE",
+        `Refusing to write ${entry.path} with the mode ${mode}: expected 0 to 0o777`,
+      );
+    }
     const data = entry.data ?? encoder.encode(entry.text ?? "");
-    return { path, data };
+    return { path, data, mode };
   });
 
   prepared.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
@@ -151,7 +165,7 @@ export async function writeZip(entries: readonly ZipWriteEntry[]): Promise<Uint8
     central.u16(0); // comment length
     central.u16(0); // disk number
     central.u16(0); // internal attributes
-    central.u32(EXTERNAL_ATTRIBUTES);
+    central.u32(((S_IFREG | entry.mode) << 16) >>> 0);
     central.u32(offset);
     central.push(nameBytes);
   }
