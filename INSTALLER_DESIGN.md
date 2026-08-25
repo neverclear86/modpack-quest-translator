@@ -51,6 +51,7 @@ per platform, and the launchers are a plain `.cmd` and a POSIX `sh` script.
 | 8  | Backup deleted, truncated or corrupted, then uninstall runs                                      | Every backup is verified against its sidecar hash and size before use, and only the backup the install record names may be read at all (§7.1); a failure is an actionable error and **nothing is written** (`E_BACKUP`)                                                                                                                                                                                                                                           |
 | 9  | Uninstall clobbers edits the user made after installing                                          | The installed file's hash must still match what was installed, else `E_TARGET_MODIFIED`. `--force` proceeds but backs the modified file up first                                                                                                                                                                                                                                                                                                                  |
 | 9b | Another process publishes its own file in the last microsecond before ours lands                 | Destructive steps are non-clobbering transactions (§6.2): the target is renamed **aside** and the payload is published into the now-absent name with `Deno.link`, which fails rather than replacing. A file that appeared in the gap wins and is left untouched; a delete only ever removes the copy it captured                                                                                                                                                  |
+| 9c | The directory the transaction is working in is renamed away and replaced mid-run                 | Every name resolves from whatever directory sits at the parent's name when the syscall runs, so a swap redirects the whole transaction. It binds to the directory's identity — device and inode, creation time, and what the name resolves to — and re-proves it either side of every path operation (§6.2). Cleanup is never retried through a changed parent, because removing "our" temporary name from a stranger's directory is a deletion, not housekeeping |
 | 10 | We redistribute ACA's English prose                                                              | The packager is handed the modpack archive the run read (`--source-archive`), pins it by digest, re-reads the pack's own quest file out of it, and compares the payload against **that**: same keys, and not the same text (§8.1). The manifest's own account of the source is checked against the archive rather than believed. `containsSourceProse: false` is that check's result, relative to the archive supplied. Backups exist only on the user's own disk |
 | 11 | The installer executable does something other than install                                       | Compiled with `--allow-read --allow-write` only. No `--allow-net`, no `--allow-run`, no `--allow-env`, no `-A`. It structurally cannot phone home or spawn anything                                                                                                                                                                                                                                                                                               |
 
@@ -63,10 +64,22 @@ per platform, and the launchers are a plain `.cmd` and a POSIX `sh` script.
   `E_TARGET_MODIFIED` and the other process's bytes still in place. What remains out of scope is a
   process that attacks the transaction rather than racing it — one that takes the private staging
   name in the instant between its reservation and the rename, for instance — along with OS-level ACL
-  misconfiguration and a compromised machine. A parent directory swapped for a symlink _during_ a
-  transaction is likewise not fully closed: the walk is re-run at every boundary (§5.6), but Deno
-  exposes no `openat`/`renameat`, so the last resolution and the syscall cannot be tied to one
-  directory handle. Neither can cause an overwrite; both can cause a refusal.
+  misconfiguration and a compromised machine.
+- **A directory swapped under a running transaction cannot redirect it.** Every name a transaction
+  uses is resolved from whatever directory sits at the parent's name when the syscall runs. Renaming
+  that directory aside and leaving a symbolic link to one of your own in its place therefore used to
+  point the entire protocol — capture, digest, publish and cleanup — at a directory the installer
+  was never given, and it would happily replace a file outside the instance with the payload and
+  delete the original on its way out. A transaction now binds to the directory's **identity**
+  (device and inode, its creation time, and what the name resolves to) and re-proves it either side
+  of every path operation (§6.2). Deno still exposes no `openat`/`renameat`, so the last resolution
+  and the syscall cannot be tied to one directory handle; what a check _after_ the call buys is that
+  the transaction finds out and puts back what it moved. The residue is bounded, and none of it is
+  an overwrite: for the length of one syscall a swapped-in directory can have a file of its own
+  renamed aside — put straight back with `link`, so a file that appeared at the name meanwhile is
+  still not replaced — or gain a second name for a file it already had, removed again and only while
+  the two names provably refer to one file. Where the platform reports no inode (Windows) the
+  identity is creation time and resolved path, which is weaker.
 - **The protocol needs hard links, and says so instead of working around their absence.** Publishing
   a name without replacing what is there is `Deno.link`, and nothing else Deno offers does it on
   both platforms. A filesystem without hard links — FAT32 on a USB stick — is refused with `E_WRITE`
@@ -530,27 +543,42 @@ does. `Deno.remove` has the same shape — it deletes whatever the name refers t
 So the destructive steps are not "check, then write over". They are transactions
 (`src/installer/publish.ts`):
 
-1. the directory is probed for the one primitive the protocol needs (below), before anything moves;
-2. the new bytes are written to a temporary file beside the target and flushed, so publishing is one
+1. the directory the target lives in is **bound**: its device, inode, creation time and resolved
+   path are recorded, and re-proved either side of every step below. A path is not a handle, so
+   every one of these steps would otherwise happily run in whatever directory had been moved into
+   that name — see below;
+2. that directory is probed for the one primitive the protocol needs (below), before anything moves;
+3. the new bytes are written to a temporary file beside the target and flushed, so publishing is one
    operation rather than a window;
-3. whatever is at the target is `rename`d **aside**, atomically, to a name reserved with `createNew`
+4. whatever is at the target is `rename`d **aside**, atomically, to a name reserved with `createNew`
    so nothing else can be holding it. That captures the bytes that were there at that instant —
    including a write that landed a microsecond earlier — and they cannot change afterwards, because
    the file now has a private name;
-4. those bytes are digested against the plan. If they are not what this run agreed to replace, they
+5. those bytes are digested against the plan. If they are not what this run agreed to replace, they
    go straight back and the run refuses;
-5. the payload is published into the target — now an absent name — with `Deno.link`, which fails
-   with `AlreadyExists` rather than replacing. A file another process created during steps 3-5
+6. the payload is published into the target — now an absent name — with `Deno.link`, which fails
+   with `AlreadyExists` rather than replacing. A file another process created during steps 4-6
    therefore **wins**, and this run finds out by being told no.
 
-Deleting is the same protocol without step 5: once the name has been renamed aside, only the
+Deleting is the same protocol without step 6: once the name has been renamed aside, only the
 captured copy is ever removed, so a file created at the target afterwards cannot be deleted by us. A
-target the plan expected to be absent skips steps 3-4 and publishes no-replace directly.
+target the plan expected to be absent skips steps 4-5 and publishes no-replace directly.
 
 `Deno.link` is load-bearing because it is the only cross-platform primitive Deno offers that
-publishes a name without replacing one. Step 1 exists so that a filesystem which cannot provide it
+publishes a name without replacing one. Step 2 exists so that a filesystem which cannot provide it
 is refused with `E_WRITE` and an explanation _before_ the player's file has been moved anywhere.
 There is no fallback to `rename`: falling back would mean keeping the race and not saying so.
+
+Step 1 is what keeps the other five pointed at the directory the plan was made for. A check before
+each operation stops one that would resolve its names somewhere else; a check _after_ it is the one
+that matters, because Deno cannot make a lookup and a syscall one operation against a directory
+handle, so an operation that has already returned may have landed in a directory that arrived
+between the two. When that happens the transaction undoes what it did there — the file it renamed
+aside goes back with `link`, the name it published is taken off again — and refuses. What it never
+does is _clean up_ through a changed parent: `Deno.remove` deletes whatever a name refers to when it
+runs, so tidying "our" temporary file out of a directory that is not ours is a deletion of somebody
+else's file that happens to be called that. A transaction that finds the parent replaced leaves its
+leftovers where they are and names them in the error.
 
 `--force` does not weaken any of this. `--force` means "the file I installed was edited and I accept
 losing that edit", decided by a human looking at an error message. It does not mean "overwrite
@@ -558,7 +586,7 @@ whatever turns up in the next fifty milliseconds".
 
 ### 6.3 A run that dies mid-transaction is finished by the next one
 
-Between steps 3 and 5 the target does not exist and its contents sit beside it under a name derived
+Between steps 4 and 6 the target does not exist and its contents sit beside it under a name derived
 from it — `en_us.snbt.mqt-staged-<8 hex>`. A transaction that merely _fails_ puts that back on its
 way out; only a process that dies between two syscalls can leave it.
 
