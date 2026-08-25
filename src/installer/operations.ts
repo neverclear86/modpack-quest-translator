@@ -10,7 +10,7 @@ import {
   resolveTargetPath,
 } from "./instance.ts";
 import { currentOs, type OsKind } from "./paths.ts";
-import { type InstallerState, loadState, saveState } from "./state.ts";
+import { type InstallerState, type InstallRecord, loadState, saveState } from "./state.ts";
 
 export interface OperationContext {
   bundleDir: string;
@@ -191,6 +191,77 @@ async function verifiedRestorable(
   return verified;
 }
 
+/**
+ * The install this run is continuing, if there is one at all.
+ *
+ * `backups/` is append-only and survives uninstall for ever, so the mere
+ * existence of an `original` or `absent` backup proves nothing about the file
+ * that is on disk right now: it may be the leftover of an install that was
+ * undone releases ago. Adopting one of those as "the original of the current
+ * install" is how a modpack update gets silently rolled back -- the pack's new
+ * English file gets classified as somebody's edit, and the next uninstall puts
+ * the old version back or deletes the file outright.
+ *
+ * So a backup only counts as preserved when this target is *actually* under
+ * installation: state.json says so, or the file on disk is still one of our
+ * payloads and it is state.json that was lost.
+ */
+interface Lineage {
+  /** The record in state.json, when the install is still on the books. */
+  record?: InstallRecord;
+  /** The original this live install belongs to, when it still verifies. */
+  preserved?: BackupRecord;
+}
+
+async function activeLineage(
+  session: Session,
+  relativePath: string,
+  currentSha256: string | null,
+  known: Set<string>,
+): Promise<Lineage> {
+  const record = session.state.installs[relativePath];
+  const liveByPayload = currentSha256 !== null && known.has(currentSha256);
+  if (!record && !liveByPayload) return {};
+
+  const restorable = await verifiedRestorable(session, relativePath);
+  const named = record?.originalBackup
+    ? restorable.find((candidate) => candidate.relativePath === record.originalBackup)
+    : undefined;
+  // A dangling pointer still identifies its backup by digest, which is more
+  // precise than "the newest one" when several lineages left originals behind.
+  const byDigest = record?.originalSha256
+    ? restorable.find((candidate) => candidate.sidecar.sha256 === record.originalSha256)
+    : undefined;
+  const preserved = named ?? byDigest ?? restorable[0];
+  return { ...(record ? { record } : {}), ...(preserved ? { preserved } : {}) };
+}
+
+/**
+ * A verified `original` backup holding exactly the bytes that are on disk now.
+ *
+ * Lineage does not come into this one: the bytes are the same, so restoring
+ * from it later reproduces the file that is there this second, whichever
+ * install captured it. It is what makes a run interrupted between capturing the
+ * backup and writing the payload finish without a second capture.
+ *
+ * `absent` sentinels are deliberately excluded. A sentinel is a zero-byte file,
+ * so a target that genuinely *is* empty would digest-match one, and adopting it
+ * would turn "restore an empty file" into "delete the file".
+ */
+async function matchingOriginal(
+  session: Session,
+  relativePath: string,
+  currentSha256: string | null,
+): Promise<BackupRecord | undefined> {
+  if (currentSha256 === null) return undefined;
+  for (const candidate of restoreCandidates(session, relativePath)) {
+    if (candidate.sidecar.kind !== "original") continue;
+    if (candidate.sidecar.sha256 !== currentSha256) continue;
+    if ((await session.store.verify(candidate)).ok) return candidate;
+  }
+  return undefined;
+}
+
 async function firstVerified(
   session: Session,
   candidates: BackupRecord[],
@@ -209,7 +280,9 @@ interface Classified {
   target: ResolvedTarget;
   current: Uint8Array | null;
   currentSha256: string | null;
-  /** A verified original/absent backup already exists for this target. */
+  /** The install this run continues, empty when this is first contact. */
+  lineage: Lineage;
+  /** The original of the install currently in force, if one is in force. */
   preserved?: BackupRecord;
   status: InstallStatus;
   /** What to capture before writing, if anything. */
@@ -237,18 +310,21 @@ export async function install(context: OperationContext): Promise<InstallResult>
     const current = await readIfPresent(target.path);
     const currentSha256 = current === null ? null : await sha256Hex(current);
 
-    const preservedOriginals = await verifiedRestorable(session, entry.path);
+    const lineage = await activeLineage(session, entry.path, currentSha256, known);
+    const identicalOriginal = await matchingOriginal(session, entry.path, currentSha256);
 
     plan.push(classify({
       entry,
       target,
       current,
       currentSha256,
-      preservedOriginals,
+      lineage,
+      ...(identicalOriginal ? { identicalOriginal } : {}),
       known,
       force: context.force,
     }));
     plan[plan.length - 1].entryIndex = index;
+    plan[plan.length - 1].lineage = lineage;
   }
 
   const targets: InstallTargetOutcome[] = [];
@@ -275,7 +351,6 @@ export async function install(context: OperationContext): Promise<InstallResult>
       await writeFileAtomic(step.target.path, entry.bytes);
     }
 
-    const previous = session.state.installs[entry.path];
     const originalBackup = step.capture === "original" || step.capture === "absent"
       ? step.preserved
       : undefined;
@@ -284,7 +359,7 @@ export async function install(context: OperationContext): Promise<InstallResult>
       bundleId: bundle.manifest.bundleId,
       installedSha256: entry.sha256,
       installedAt: context.now().toISOString(),
-      ...originalPointer(originalBackup, previous, step.preserved),
+      ...originalPointer(originalBackup, step.lineage.record, step.preserved),
       toolVersion: bundle.manifest.toolVersion,
     };
     session.state.history.push({
@@ -318,20 +393,20 @@ export async function install(context: OperationContext): Promise<InstallResult>
 /**
  * Which backup this install should point at as "the original".
  *
- * A backup captured just now wins; otherwise the pointer already in state is
- * kept, because an upgrade must not lose the original English file; otherwise
- * an original found on disk is adopted, which is what repairs an install whose
- * state.json was lost.
+ * A backup captured just now wins, because it is by definition the file this
+ * run replaced; otherwise the pointer the live install already carries is kept,
+ * because an upgrade must not lose the original English file; otherwise the
+ * original belonging to that live install is adopted, which is what repairs an
+ * install whose state.json was lost. A backup from an install that has already
+ * been undone never reaches any of the three: it is not part of this lineage.
  */
 function originalPointer(
   captured: BackupRecord | undefined,
-  previous:
-    | { originalBackup?: string; originalSha256?: string; originalWasAbsent: boolean }
-    | undefined,
+  previous: InstallRecord | undefined,
   preserved: BackupRecord | undefined,
 ): { originalBackup?: string; originalSha256?: string; originalWasAbsent: boolean } {
   const source = captured ?? preserved;
-  if (previous?.originalBackup) {
+  if (captured === undefined && previous?.originalBackup) {
     return {
       originalBackup: previous.originalBackup,
       ...(previous.originalSha256 ? { originalSha256: previous.originalSha256 } : {}),
@@ -353,20 +428,23 @@ interface ClassifyArgs {
   target: ResolvedTarget;
   current: Uint8Array | null;
   currentSha256: string | null;
-  /** Verified original/absent backups already held for this target, newest first. */
-  preservedOriginals: BackupRecord[];
+  /** The install currently in force for this target, if any. */
+  lineage: Lineage;
+  /** A verified `original` backup byte-identical to what is on disk now. */
+  identicalOriginal?: BackupRecord;
   known: Set<string>;
   force: boolean;
 }
 
 function classify(args: ClassifyArgs): Classified {
-  const preserved = args.preservedOriginals[0];
+  const preserved = args.lineage.preserved;
   const base = {
     entryIndex: 0,
     target: args.target,
     current: args.current,
     currentSha256: args.currentSha256,
-    preserved,
+    lineage: args.lineage,
+    ...(preserved ? { preserved } : {}),
   };
 
   if (args.currentSha256 === args.entry.sha256) {
@@ -377,8 +455,9 @@ function classify(args: ClassifyArgs): Classified {
   }
 
   if (args.current === null) {
-    // Nothing here. If an original is already preserved (a previous install we
-    // are repairing) keep it; otherwise record that there was no file.
+    // Nothing here. If this install's own original is already preserved (a
+    // previous install we are repairing) keep it; otherwise record that there
+    // was no file.
     return { ...base, status: "installed", capture: preserved ? undefined : "absent" };
   }
 
@@ -387,16 +466,17 @@ function classify(args: ClassifyArgs): Classified {
     return { ...base, status: "upgraded" };
   }
 
-  if (args.preservedOriginals.some((record) => record.sidecar.sha256 === args.currentSha256)) {
-    // Byte-for-byte what we already preserved. This is the run that finishes an
-    // install interrupted between capturing the backup and writing the payload:
-    // the file is the original, not a modification of ours.
-    return { ...base, status: "installed" };
+  if (args.identicalOriginal) {
+    // Byte-for-byte an original we already hold. This is the run that finishes
+    // an install interrupted between capturing the backup and writing the
+    // payload: the file is the original, not a modification of ours.
+    return { ...base, preserved: args.identicalOriginal, status: "installed" };
   }
 
   if (preserved) {
-    // We already hold this target's original, so whatever is here now arrived
-    // after we installed -- an edit, or a hand-placed replacement.
+    // This install is live and we already hold its original, so whatever is
+    // here now arrived after we installed -- an edit, or a hand-placed
+    // replacement.
     if (!args.force) {
       throw new AppError(
         "E_TARGET_MODIFIED",
@@ -535,7 +615,7 @@ async function planRestore(
     );
   }
 
-  const chosen = await chooseBackup(session, entry.path, record?.originalBackup);
+  const chosen = await chooseBackup(session, entry.path, record);
   if ("failures" in chosen) {
     throw new AppError(
       "E_BACKUP",
@@ -569,18 +649,25 @@ async function planRestore(
 async function chooseBackup(
   session: Session,
   relativePath: string,
-  pointer: string | undefined,
+  record: Pick<InstallRecord, "originalBackup" | "originalSha256"> | undefined,
 ): Promise<{ record: BackupRecord; bytes: Uint8Array } | { failures: string[] }> {
   const candidates = restoreCandidates(session, relativePath);
+  const pointer = record?.originalBackup;
   const named = pointer
     ? candidates.find((candidate) => candidate.relativePath === pointer)
     : undefined;
+  // A pointer whose file was renamed away still names its bytes, and picking
+  // those beats picking "the newest", which may belong to another lineage.
+  const byDigest = named ??
+    (record?.originalSha256
+      ? candidates.find((candidate) => candidate.sidecar.sha256 === record.originalSha256)
+      : undefined);
 
   const failures: string[] = [];
   if (pointer && !named) {
     failures.push(`${pointer}: recorded as the original backup, but it is missing`);
   }
-  const ordered = named ? [named, ...candidates.filter((c) => c !== named)] : candidates;
+  const ordered = byDigest ? [byDigest, ...candidates.filter((c) => c !== byDigest)] : candidates;
 
   const result = await firstVerified(session, ordered);
   if ("record" in result) return result;
@@ -599,7 +686,7 @@ export async function status(context: OperationContext): Promise<StatusResult> {
     const current = await readIfPresent(target.path);
     const currentSha256 = current === null ? null : await sha256Hex(current);
     const record = session.state.installs[entry.path];
-    const chosen = await chooseBackup(session, entry.path, record?.originalBackup);
+    const chosen = await chooseBackup(session, entry.path, record);
 
     targets.push({
       relativePath: entry.path,

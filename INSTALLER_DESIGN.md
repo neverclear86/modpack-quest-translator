@@ -277,6 +277,35 @@ A second, cheap guard: capture deduplicates by hash. If `backups/` already holds
 of the same target with the same SHA-256, that one is reused rather than a near-duplicate written.
 This is what makes an interrupted run converge rather than accumulate.
 
+### 5.5 A retained backup is not an installation
+
+`backups/` is append-only and survives uninstall for ever, so **the existence of an `original` or
+`absent` backup says nothing about the file that is on disk right now.** It may be the leftover of
+an install that was undone releases ago.
+
+A backup counts as _this install's preserved original_ only when the target is genuinely under
+installation — the **lineage** is live:
+
+- `state.json` still has an install record for that target, **or**
+- the file on disk is still one of our payloads and it is `state.json` that was lost.
+
+Where neither holds, install is at **first contact** with whatever is there, and captures it as a
+fresh `original`.
+
+Without that rule, this happens: install into a pack, uninstall, then update the modpack so it ships
+a new `en_us.snbt`. The next install finds the retained backup, decides the pack's brand-new English
+file must be somebody's edit of our translation, refuses with `E_TARGET_MODIFIED` — and under
+`--force` files that new file away as `modified-install`, which is _not_ a restore candidate, while
+pointing the install record at the years-old backup. The next uninstall then puts the old version
+back, or deletes the file outright if the old backup was an `absent` sentinel. Both outcomes destroy
+the pack's current quest prose, which is the one asset this whole design exists to protect.
+
+The exception, and it is safe by construction: if the bytes on disk are byte-for-byte a verified
+`original` we already hold, that backup is adopted whatever its lineage, because restoring it later
+reproduces exactly the file that is there now. `absent` sentinels are excluded from that match — a
+sentinel is a zero-byte file, so a target that genuinely _is_ empty would match one, and adopting it
+would turn "restore an empty file" into "delete the file".
+
 ### 5.4 `state.json`
 
 ```json
@@ -337,19 +366,23 @@ resolve target ─┬─ payload path not under config/ftbquests/quests/lang/, o
 classify current target
 ```
 
-| Classification                                                 | Action                                                                                                                                                                    |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **payload-current** — hash equals this bundle's payload        | **Idempotent.** No backup, no rewrite. Report "already installed", exit 0. `--force` rewrites the same bytes but still takes no backup                                    |
-| **absent** — no file there                                     | Record an `absent` sentinel backup, write payload → `INSTALLED`. If an `original` is already preserved for this target, keep it and record nothing new                    |
-| **payload-known** — hash equals a previously installed payload | Overlay upgrade. **No backup** (it is not original). Keep the existing `originalBackup` pointer, write the new payload → `INSTALLED`                                      |
-| **preserved-original** — hash equals a backup we already hold  | The run that finishes an install interrupted between capturing the backup and writing the payload. No second backup; write payload → `INSTALLED`                          |
-| **modified** — foreign, but an original is already preserved   | Whatever is here arrived after we installed. `E_TARGET_MODIFIED`, nothing written. `--force` captures it as `kind: "modified-install"` **first**, then writes the payload |
-| **foreign** — anything else, and no original preserved yet     | First contact with a file we did not write: capture it as `kind: "original"` (or reuse an identical existing backup), then write payload → `INSTALLED`                    |
+| Classification                                                  | Action                                                                                                                                                                    |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **payload-current** — hash equals this bundle's payload         | **Idempotent.** No backup, no rewrite. Report "already installed", exit 0. `--force` rewrites the same bytes but still takes no backup                                    |
+| **absent** — no file there                                      | Record an `absent` sentinel backup, write payload → `INSTALLED`. If the **live** install already has an `original` preserved, keep it and record nothing new              |
+| **payload-known** — hash equals a previously installed payload  | Overlay upgrade. **No backup** (it is not original). Keep the existing `originalBackup` pointer, write the new payload → `INSTALLED`                                      |
+| **preserved-original** — hash equals an `original` we hold      | The run that finishes an install interrupted between capturing the backup and writing the payload. No second backup; write payload → `INSTALLED`                          |
+| **modified** — foreign, and the live install's original is held | Whatever is here arrived after we installed. `E_TARGET_MODIFIED`, nothing written. `--force` captures it as `kind: "modified-install"` **first**, then writes the payload |
+| **foreign** — anything else, no install of ours is live here    | First contact with a file we did not write: capture it as `kind: "original"` (or reuse an identical existing backup), then write payload → `INSTALLED`                    |
 
 The order matters: **payload-current** is tested before anything else, so a file that is one of our
 payloads can never reach the capture branches. **modified** is the reason `install` — not only
 `uninstall` — can exit 12: an edited installed file is not an original, and silently overwriting the
 player's edit would be as bad as silently overwriting the pack's.
+
+"Preserved" always means **the live install's** original (§5.5). A backup left behind by an install
+that has already been undone is not one, so a modpack that ships a new `en_us.snbt` after an
+uninstall is classified **foreign** — first contact — and its file becomes the new `original`.
 
 Write order, chosen for crash safety:
 
@@ -389,9 +422,12 @@ load state.json, then reconcile the backup inventory from backups/*.json sidecar
 **Choosing the backup** — "the correct/latest usable original backup":
 
 1. The one named by the install record, if it exists and verifies.
-2. Otherwise the newest by `capturedAt` among sidecars with a matching `targetRelativePath` and
+2. Otherwise the one whose `sha256` equals the record's `originalSha256` — a pointer whose file was
+   renamed away still names its bytes, and that beats "the newest" when several undone installs have
+   each left an original behind.
+3. Otherwise the newest by `capturedAt` among sidecars with a matching `targetRelativePath` and
    `kind ∈ {original, absent}` that verifies.
-3. Otherwise `E_BACKUP`.
+4. Otherwise `E_BACKUP`.
 
 **Restore is atomic**: backup bytes → temp file in the target's directory → `sync` → `rename` over
 the target. A crash mid-restore leaves either the old file or the new one, never a truncated one.
