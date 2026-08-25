@@ -181,7 +181,7 @@ Deno.test("uninstall works from the sidecars alone when state.json is gone", asy
   });
 });
 
-Deno.test("a state pointer to a missing backup falls back to the newest that verifies", async () => {
+Deno.test("a renamed backup is still found by the digest the record holds", async () => {
   await withInstalled(async (fixture) => {
     const installerDir = `${fixture.instanceRoot}/${INSTALLER_DIR}`;
     const state = (await loadState(installerDir)).state;
@@ -190,9 +190,27 @@ Deno.test("a state pointer to a missing backup falls back to the newest that ver
       `${installerDir}/state.json`,
       JSON.stringify(state, null, 2),
     );
+    // The path is dangling, but originalSha256 still names the exact bytes, and
+    // a backup holding exactly those bytes restores an identical file whichever
+    // copy it is read from. That is not a lineage guess.
     const result = await uninstall(context(fixture));
     assertEquals(result.targets[0].status, "restored");
     assertEquals(await fixture.read(), ENGLISH);
+  });
+});
+
+Deno.test("a record whose original cannot be matched at all is E_BACKUP", async () => {
+  await withInstalled(async (fixture) => {
+    const installerDir = `${fixture.instanceRoot}/${INSTALLER_DIR}`;
+    const state = (await loadState(installerDir)).state;
+    state.installs[TARGET_RELATIVE].originalBackup = "backups/does-not-exist.bak";
+    state.installs[TARGET_RELATIVE].originalSha256 = "f".repeat(64);
+    await Deno.writeTextFile(`${installerDir}/state.json`, JSON.stringify(state, null, 2));
+
+    const error = await assertRejects(() => uninstall(context(fixture)), AppError);
+    assertEquals(error.code, "E_BACKUP");
+    assertStringIncludes(error.message, "missing");
+    assertEquals(await fixture.read(), JAPANESE);
   });
 });
 

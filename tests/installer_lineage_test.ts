@@ -9,7 +9,8 @@
  * something to be rolled back to a version of the pack the player no longer
  * runs.
  */
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
+import { AppError } from "../src/errors.ts";
 import { install, uninstall } from "../src/installer/operations.ts";
 import {
   ENGLISH,
@@ -108,5 +109,77 @@ Deno.test("the newer original is what a later uninstall restores, byte for byte"
 
     await uninstall(context(fixture, now));
     assertEquals(await fixture.read(), PACK_UPDATE_ENGLISH);
+  });
+});
+
+/**
+ * The reviewer's sequence: two lineages on disk, the current one's backup
+ * corrupted.
+ *
+ * Backups are append-only and outlive the install that made them, so after a
+ * modpack update there are two `original` backups for the same target -- the
+ * pack's old English file and its new one. `state.json` names which of them
+ * belongs to the install that is in force. If that one cannot be verified,
+ * there is exactly one safe answer, and quietly restoring the other lineage's
+ * older file is not it: the player would get a pre-update quest file back and
+ * be told the uninstall succeeded.
+ */
+Deno.test("a corrupt current-lineage backup never falls back to an older lineage", async () => {
+  await withFixture(async (fixture, now) => {
+    // Lineage one: the pack's original English file, backed up and restored.
+    await install(context(fixture, now));
+    await uninstall(context(fixture, now));
+    assertEquals(await fixture.read(), ENGLISH);
+
+    // The player updates the modpack, and installs again. Lineage two.
+    await Deno.writeTextFile(fixture.targetPath, PACK_UPDATE_ENGLISH);
+    await install(context(fixture, now));
+    assertEquals(await fixture.read(), JAPANESE);
+
+    const backupsDir = `${fixture.instanceRoot}/.mqt-installer/backups`;
+    const state = JSON.parse(
+      await Deno.readTextFile(`${fixture.instanceRoot}/.mqt-installer/state.json`),
+    );
+    const pointed: string = state.installs[TARGET_RELATIVE].originalBackup;
+    assertEquals(
+      await Deno.readTextFile(`${fixture.instanceRoot}/.mqt-installer/${pointed}`),
+      PACK_UPDATE_ENGLISH,
+    );
+
+    // Exactly the backup this install points at is corrupted -- same length,
+    // different bytes, so only the digest catches it. The older lineage's
+    // backup is untouched and still verifies.
+    const pointedPath = `${fixture.instanceRoot}/.mqt-installer/${pointed}`;
+    await Deno.writeTextFile(pointedPath, PACK_UPDATE_ENGLISH.replace("Reforged", "Refarged"));
+
+    const others: string[] = [];
+    for await (const entry of Deno.readDir(backupsDir)) {
+      if (entry.name.endsWith(".bak") && !pointed.endsWith(entry.name)) others.push(entry.name);
+    }
+    assertEquals(others.length, 1, `expected one older lineage backup, got ${others}`);
+    assertEquals(await Deno.readTextFile(`${backupsDir}/${others[0]}`), ENGLISH);
+
+    const error = await assertRejects(() => uninstall(context(fixture, now)), AppError);
+    assertEquals(error.code, "E_BACKUP");
+    // Not the pre-update English file, and not the pack's newer one either:
+    // nothing was written at all.
+    assertEquals(await fixture.read(), JAPANESE);
+  });
+});
+
+Deno.test("with state.json gone and two lineages on disk, uninstall refuses to guess", async () => {
+  await withFixture(async (fixture, now) => {
+    await install(context(fixture, now));
+    await uninstall(context(fixture, now));
+    await Deno.writeTextFile(fixture.targetPath, PACK_UPDATE_ENGLISH);
+    await install(context(fixture, now));
+
+    // The one record that said which original belongs to the live install is
+    // gone. Both backups verify; neither is knowably the right one.
+    await Deno.remove(`${fixture.instanceRoot}/.mqt-installer/state.json`);
+
+    const error = await assertRejects(() => uninstall(context(fixture, now)), AppError);
+    assertEquals(error.code, "E_BACKUP");
+    assertEquals(await fixture.read(), JAPANESE);
   });
 });

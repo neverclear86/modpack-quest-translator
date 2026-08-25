@@ -2,7 +2,13 @@ import { AppError } from "../errors.ts";
 import { currentDurability, type Durability } from "../util/durable.ts";
 import { writeFileAtomic } from "../util/fs.ts";
 import { sha256Hex } from "../util/hash.ts";
-import { type BackupKind, type BackupRecord, BackupStore, RESTORABLE_KINDS } from "./backup.ts";
+import {
+  type BackupKind,
+  type BackupRecord,
+  BACKUPS_DIR,
+  BackupStore,
+  RESTORABLE_KINDS,
+} from "./backup.ts";
 import { loadBundle, loadBundleManifest, type LoadedBundle } from "./bundle.ts";
 import {
   type ResolvedInstance,
@@ -246,16 +252,58 @@ async function activeLineage(
   if (!record && !liveByPayload) return {};
 
   const restorable = await verifiedRestorable(session, relativePath);
-  const named = record?.originalBackup
-    ? restorable.find((candidate) => candidate.relativePath === record.originalBackup)
-    : undefined;
-  // A dangling pointer still identifies its backup by digest, which is more
-  // precise than "the newest one" when several lineages left originals behind.
-  const byDigest = record?.originalSha256
-    ? restorable.find((candidate) => candidate.sidecar.sha256 === record.originalSha256)
-    : undefined;
-  const preserved = named ?? byDigest ?? restorable[0];
+  const preserved = permittedBackups(restorable, record).allowed[0];
   return { ...(record ? { record } : {}), ...(preserved ? { preserved } : {}) };
+}
+
+/**
+ * The backups an install record permits to be treated as its original, in
+ * preference order.
+ *
+ * An install that is on the books names its own original, and that backup --
+ * by name, or by the digest that still identifies its bytes when the file has
+ * been renamed -- is the only thing undoing that install may put back.
+ * `backups/` is append-only and outlives the install that filled it, so its
+ * other entries belong to lineages that have already been undone. If the
+ * modpack updated its own English file in between, restoring one of those
+ * hands the player a pre-update quest file and reports success.
+ *
+ * So a pointer that cannot be matched is a refusal, not a cue to look further.
+ * With no pointer at all -- state.json lost, or a record written before
+ * pointers were kept -- a single candidate is unambiguous and anything more is
+ * a guess between lineages. Guessing is precisely the failure this refuses to
+ * make.
+ *
+ * Several candidates *can* share the pointer's digest, and those are not a
+ * guess: identical bytes restore an identical file, whichever copy is read.
+ */
+function permittedBackups(
+  candidates: readonly BackupRecord[],
+  record: Pick<InstallRecord, "originalBackup" | "originalSha256"> | undefined,
+): { allowed: BackupRecord[]; refusal?: string } {
+  const pointer = record?.originalBackup;
+  const digest = record?.originalSha256;
+
+  if (pointer === undefined && digest === undefined) {
+    if (candidates.length <= 1) return { allowed: [...candidates] };
+    return {
+      allowed: [],
+      refusal: `${candidates.length} backups of this file are on disk and nothing records which ` +
+        `one belongs to the install being undone`,
+    };
+  }
+
+  const allowed = candidates.filter((candidate) =>
+    candidate.relativePath === pointer || candidate.sidecar.sha256 === digest
+  );
+  // The named one first: a path is more specific than a digest.
+  allowed.sort((a, b) => Number(b.relativePath === pointer) - Number(a.relativePath === pointer));
+  if (allowed.length > 0) return { allowed };
+  return {
+    allowed: [],
+    refusal: `${pointer ?? digest}: recorded as this install's original backup, but no backup ` +
+      `in ${BACKUPS_DIR}/ matches it -- it is missing`,
+  };
 }
 
 /**
@@ -826,36 +874,23 @@ async function planRestore(
 }
 
 /**
- * The backup named by the install record, if it still verifies; otherwise the
- * newest backup on disk for this target that does. Nothing is ever restored
- * from a backup whose size and digest do not match what was captured.
+ * The backup this install may be undone from, or why there is none.
+ *
+ * Only what `permittedBackups` allows is even read, and nothing is ever
+ * restored from a backup whose size and digest do not match what was captured.
+ * A permitted backup that fails either check ends the run with E_BACKUP: the
+ * remaining files in `backups/` belong to other lineages, and reaching for one
+ * of them is how an uninstall silently rolls the pack back.
  */
 async function chooseBackup(
   session: Session,
   relativePath: string,
   record: Pick<InstallRecord, "originalBackup" | "originalSha256"> | undefined,
 ): Promise<{ record: BackupRecord; bytes: Uint8Array } | { failures: string[] }> {
-  const candidates = restoreCandidates(session, relativePath);
-  const pointer = record?.originalBackup;
-  const named = pointer
-    ? candidates.find((candidate) => candidate.relativePath === pointer)
-    : undefined;
-  // A pointer whose file was renamed away still names its bytes, and picking
-  // those beats picking "the newest", which may belong to another lineage.
-  const byDigest = named ??
-    (record?.originalSha256
-      ? candidates.find((candidate) => candidate.sidecar.sha256 === record.originalSha256)
-      : undefined);
-
-  const failures: string[] = [];
-  if (pointer && !named) {
-    failures.push(`${pointer}: recorded as the original backup, but it is missing`);
-  }
-  const ordered = byDigest ? [byDigest, ...candidates.filter((c) => c !== byDigest)] : candidates;
-
-  const result = await firstVerified(session, ordered);
+  const { allowed, refusal } = permittedBackups(restoreCandidates(session, relativePath), record);
+  const result = await firstVerified(session, allowed);
   if ("record" in result) return result;
-  return { failures: [...failures, ...result.failures] };
+  return { failures: [...(refusal ? [refusal] : []), ...result.failures] };
 }
 
 /** Report what is installed without writing anything. */
