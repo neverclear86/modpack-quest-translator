@@ -1,0 +1,362 @@
+import { AppError } from "../errors.ts";
+import { basenameOf } from "../util/fs.ts";
+import { sha256Hex } from "../util/hash.ts";
+import { assertPayloadPath } from "./bundle.ts";
+import { currentOs, joinNative, type OsKind } from "./paths.ts";
+
+/** Bumped only for a change an older installer could not read correctly. */
+export const BACKUP_FORMAT_VERSION = 1;
+
+/**
+ * Everything the installer remembers lives inside the instance, so backups
+ * travel with a copied or moved instance and no home directory, registry key or
+ * administrator right is ever involved.
+ */
+export const INSTALLER_DIR = ".mqt-installer";
+export const BACKUPS_DIR = "backups";
+
+export type BackupKind =
+  /** The file that was there before we first replaced anything. */
+  | "original"
+  /** Sentinel: there was no file before install, so restoring means deleting. */
+  | "absent"
+  /** An installed payload the user then edited, kept by `uninstall --force`. */
+  | "modified-install";
+
+/** Only these two are restore candidates. */
+export const RESTORABLE_KINDS: readonly BackupKind[] = ["original", "absent"];
+
+export interface BackupSidecar {
+  formatVersion: number;
+  kind: BackupKind;
+  targetRelativePath: string;
+  capturedAt: string;
+  sha256: string;
+  sizeBytes: number;
+  toolVersion: string;
+  capturedByBundleId: string;
+}
+
+export interface BackupRecord {
+  /** File name inside `backups/`. */
+  name: string;
+  /** Path relative to the installer directory, as stored in state.json. */
+  relativePath: string;
+  backupPath: string;
+  sidecarPath: string;
+  sidecar: BackupSidecar;
+  /** True when an identical backup already existed and was reused. */
+  reused: boolean;
+}
+
+export interface BackupScan {
+  records: BackupRecord[];
+  /** Sidecars that could not be read, with the reason, for E_BACKUP reporting. */
+  skipped: { path: string; reason: string }[];
+}
+
+export interface VerifiedBackup {
+  ok: boolean;
+  bytes?: Uint8Array;
+  reason?: string;
+}
+
+export interface CaptureArgs {
+  relativePath: string;
+  /** The bytes to preserve, or null to record that there was no file. */
+  bytes: Uint8Array | null;
+  kind: BackupKind;
+  /** ISO-8601, injected rather than read from the clock so runs are testable. */
+  capturedAt: string;
+}
+
+export interface BackupStoreOptions {
+  toolVersion: string;
+  bundleId: string;
+  os?: OsKind;
+}
+
+export function backupError(message: string, hint?: string, cause?: unknown): AppError {
+  return new AppError("E_BACKUP", message, { hint, cause });
+}
+
+/** `20260825T142233Z` — sortable, filename-safe, and readable at a glance. */
+export function compactTimestamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    throw backupError(`${JSON.stringify(iso)} is not a usable timestamp`);
+  }
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * The on-disk backup inventory for one instance.
+ *
+ * Sidecars, not `state.json`, are the authority on what backups exist: state
+ * can be lost or truncated, and the whole point of this directory is to survive
+ * that. Nothing here is ever overwritten or deleted -- backups are created with
+ * `createNew`, and uninstall only ever appends history.
+ */
+export class BackupStore {
+  readonly #root: string;
+  readonly #os: OsKind;
+  readonly #toolVersion: string;
+  readonly #bundleId: string;
+
+  constructor(instanceRoot: string, options: BackupStoreOptions) {
+    this.#root = instanceRoot;
+    this.#os = options.os ?? currentOs();
+    this.#toolVersion = options.toolVersion;
+    this.#bundleId = options.bundleId;
+  }
+
+  /** `<instance>/.mqt-installer`. */
+  get installerDirectory(): string {
+    return joinNative(this.#os, this.#root, INSTALLER_DIR);
+  }
+
+  get backupsDirectory(): string {
+    return joinNative(this.#os, this.installerDirectory, BACKUPS_DIR);
+  }
+
+  /** Resolve a `backups/<name>.bak` reference from state.json. */
+  pathOf(relativePath: string): string {
+    return joinNative(this.#os, this.installerDirectory, ...relativePath.split("/"));
+  }
+
+  async scan(): Promise<BackupScan> {
+    const records: BackupRecord[] = [];
+    const skipped: { path: string; reason: string }[] = [];
+
+    let names: string[];
+    try {
+      names = [];
+      for await (const entry of Deno.readDir(this.backupsDirectory)) {
+        if (entry.isFile && entry.name.endsWith(".bak.json")) names.push(entry.name);
+      }
+    } catch (cause) {
+      if (cause instanceof Deno.errors.NotFound) return { records: [], skipped: [] };
+      throw backupError(`Could not read ${this.backupsDirectory}`, undefined, cause);
+    }
+    names.sort();
+
+    for (const name of names) {
+      const sidecarPath = joinNative(this.#os, this.backupsDirectory, name);
+      let sidecar: BackupSidecar;
+      try {
+        sidecar = parseSidecar(await Deno.readTextFile(sidecarPath), sidecarPath);
+      } catch (error) {
+        if (error instanceof AppError && error.details?.unreadable === true) {
+          skipped.push({ path: sidecarPath, reason: error.message });
+          continue;
+        }
+        throw error;
+      }
+      const backupName = name.slice(0, -".json".length);
+      records.push({
+        name: backupName,
+        relativePath: `${BACKUPS_DIR}/${backupName}`,
+        backupPath: joinNative(this.#os, this.backupsDirectory, backupName),
+        sidecarPath,
+        sidecar,
+        reused: false,
+      });
+    }
+    return { records, skipped };
+  }
+
+  /** Read a backup and prove it is still exactly what was captured. */
+  async verify(record: BackupRecord): Promise<VerifiedBackup> {
+    // An "absent" sentinel is a zero-byte file, so it verifies through exactly
+    // the same size-and-digest path as a real backup rather than a special case.
+    let bytes: Uint8Array;
+    try {
+      bytes = await Deno.readFile(record.backupPath);
+    } catch (cause) {
+      const reason = cause instanceof Deno.errors.NotFound
+        ? `the backup file is missing: ${record.backupPath}`
+        : `the backup file could not be read: ${record.backupPath}`;
+      return { ok: false, reason };
+    }
+    if (bytes.byteLength !== record.sidecar.sizeBytes) {
+      return {
+        ok: false,
+        reason: `${record.name} is ${bytes.byteLength} bytes, but ${record.sidecar.sizeBytes} ` +
+          `bytes were captured`,
+      };
+    }
+    const digest = await sha256Hex(bytes);
+    if (digest !== record.sidecar.sha256) {
+      return { ok: false, reason: `${record.name} no longer matches its recorded digest` };
+    }
+    return { ok: true, bytes };
+  }
+
+  /**
+   * Preserve `bytes` under a name that cannot collide, or reuse an identical
+   * backup that is already there.
+   *
+   * The reuse is what makes an interrupted run converge instead of accumulating
+   * near-duplicates: a crash between capturing the backup and writing the
+   * payload leaves an orphan, and the next run finds it by digest.
+   */
+  async capture(args: CaptureArgs): Promise<BackupRecord> {
+    const relativePath = assertPayloadPath(args.relativePath);
+    const data = args.bytes ?? new Uint8Array(0);
+    const sha256 = await sha256Hex(data);
+
+    const scan = await this.scan();
+    const existing = scan.records.find((record) =>
+      record.sidecar.targetRelativePath === relativePath &&
+      record.sidecar.kind === args.kind &&
+      record.sidecar.sha256 === sha256
+    );
+    if (existing && (await this.verify(existing)).ok) return { ...existing, reused: true };
+
+    const sidecar: BackupSidecar = {
+      formatVersion: BACKUP_FORMAT_VERSION,
+      kind: args.kind,
+      targetRelativePath: relativePath,
+      capturedAt: args.capturedAt,
+      sha256,
+      sizeBytes: data.byteLength,
+      toolVersion: this.#toolVersion,
+      capturedByBundleId: this.#bundleId,
+    };
+
+    await Deno.mkdir(this.backupsDirectory, { recursive: true });
+    const stem = `${basenameOf(relativePath)}.${compactTimestamp(args.capturedAt)}`;
+    const suffix = sha256.slice(0, 12);
+
+    for (let counter = 0; counter < 1000; counter++) {
+      const name = `${stem}-${counter}.${suffix}.bak`;
+      const backupPath = joinNative(this.#os, this.backupsDirectory, name);
+      let file: Deno.FsFile;
+      try {
+        file = await Deno.open(backupPath, { write: true, createNew: true });
+      } catch (cause) {
+        if (cause instanceof Deno.errors.AlreadyExists) continue;
+        throw backupError(`Could not create the backup ${backupPath}`, BACKUP_HINT, cause);
+      }
+      try {
+        let written = 0;
+        while (written < data.byteLength) written += await file.write(data.subarray(written));
+        await file.sync().catch(() => {});
+      } catch (cause) {
+        throw backupError(`Could not write the backup ${backupPath}`, BACKUP_HINT, cause);
+      } finally {
+        file.close();
+      }
+
+      const sidecarPath = `${backupPath}.json`;
+      await writeSidecar(sidecarPath, sidecar);
+      return {
+        name,
+        relativePath: `${BACKUPS_DIR}/${name}`,
+        backupPath,
+        sidecarPath,
+        sidecar,
+        reused: false,
+      };
+    }
+
+    throw backupError(
+      `Could not find a free backup name for ${relativePath}`,
+      `Something is creating files in ${this.backupsDirectory} faster than they can be used.`,
+    );
+  }
+}
+
+const BACKUP_HINT =
+  "The instance directory has to be writable for the original file to be preserved; " +
+  "nothing was changed.";
+
+/**
+ * The sidecar is written after its backup and flushed, so a crash between the
+ * two leaves an unlabelled `.bak` that is ignored rather than a label with no
+ * bytes behind it.
+ */
+async function writeSidecar(path: string, sidecar: BackupSidecar): Promise<void> {
+  const bytes = new TextEncoder().encode(`${JSON.stringify(sidecar, null, 2)}\n`);
+  let file: Deno.FsFile;
+  try {
+    file = await Deno.open(path, { write: true, create: true, truncate: true });
+  } catch (cause) {
+    throw backupError(`Could not write the backup record ${path}`, BACKUP_HINT, cause);
+  }
+  try {
+    let written = 0;
+    while (written < bytes.byteLength) written += await file.write(bytes.subarray(written));
+    await file.sync().catch(() => {});
+  } catch (cause) {
+    throw backupError(`Could not write the backup record ${path}`, BACKUP_HINT, cause);
+  } finally {
+    file.close();
+  }
+}
+
+function unreadable(message: string, cause?: unknown): AppError {
+  return new AppError("E_BACKUP", message, { cause, details: { unreadable: true } });
+}
+
+export function parseSidecar(text: string, path: string): BackupSidecar {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (cause) {
+    throw unreadable(`${path} is not valid JSON`, cause);
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw unreadable(`${path} is not a JSON object`);
+  }
+  const body = raw as Record<string, unknown>;
+
+  const formatVersion = body.formatVersion;
+  if (typeof formatVersion !== "number" || !Number.isInteger(formatVersion)) {
+    throw unreadable(`${path} has no integer formatVersion`);
+  }
+  if (formatVersion > BACKUP_FORMAT_VERSION) {
+    // Not skippable: a backup this installer cannot read is exactly the file it
+    // must not step around, because stepping around it is how an original is
+    // lost.
+    throw backupError(
+      `${path} was written by a newer version of the installer ` +
+        `(formatVersion ${formatVersion})`,
+      "Use the installer that created this instance's backups.",
+    );
+  }
+
+  const kind = body.kind;
+  if (kind !== "original" && kind !== "absent" && kind !== "modified-install") {
+    throw unreadable(`${path} has the unknown backup kind ${JSON.stringify(kind)}`);
+  }
+  const sha256 = body.sha256;
+  if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) {
+    throw unreadable(`${path} has no usable sha256`);
+  }
+  const sizeBytes = body.sizeBytes;
+  if (typeof sizeBytes !== "number" || !Number.isInteger(sizeBytes) || sizeBytes < 0) {
+    throw unreadable(`${path} has no usable sizeBytes`);
+  }
+  const targetRelativePath = body.targetRelativePath;
+  if (typeof targetRelativePath !== "string" || targetRelativePath.length === 0) {
+    throw unreadable(`${path} has no targetRelativePath`);
+  }
+  const capturedAt = body.capturedAt;
+  if (typeof capturedAt !== "string" || Number.isNaN(new Date(capturedAt).getTime())) {
+    throw unreadable(`${path} has no usable capturedAt`);
+  }
+
+  return {
+    formatVersion,
+    kind,
+    targetRelativePath,
+    capturedAt,
+    sha256,
+    sizeBytes,
+    toolVersion: typeof body.toolVersion === "string" ? body.toolVersion : "unknown",
+    capturedByBundleId: typeof body.capturedByBundleId === "string"
+      ? body.capturedByBundleId
+      : "unknown",
+  };
+}
