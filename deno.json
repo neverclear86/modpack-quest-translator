@@ -12,6 +12,7 @@
     "build:installer:windows": "deno compile --allow-read --allow-write --target x86_64-pc-windows-msvc --output dist/bin/mqt-installer-windows-x86_64.exe src/installer/main.ts",
     "build:installers": "deno task build:installer:linux && deno task build:installer:windows",
     "package-installer": "deno run --allow-read --allow-write src/packager/main.ts",
+    "e2e:bundle": "deno run -A tools/bundle_e2e.ts",
     "verify": "deno fmt --check && deno lint && deno task check && deno test -A"
   },
   "imports": {
