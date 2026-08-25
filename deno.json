@@ -3,12 +3,15 @@
   "version": "1.0.0",
   "exports": "./src/cli/main.ts",
   "tasks": {
-    "check": "deno check src/cli/main.ts",
+    "check": "deno check src/cli/main.ts src/installer/main.ts",
     "test": "deno test -A",
     "fmt": "deno fmt",
     "lint": "deno lint",
     "build": "deno compile -A --output dist/modpack-quest-translator src/cli/main.ts",
-    "verify": "deno fmt --check && deno lint && deno check src/cli/main.ts && deno test -A"
+    "build:installer:linux": "deno compile --allow-read --allow-write --target x86_64-unknown-linux-gnu --output dist/bin/mqt-installer-linux-x86_64 src/installer/main.ts",
+    "build:installer:windows": "deno compile --allow-read --allow-write --target x86_64-pc-windows-msvc --output dist/bin/mqt-installer-windows-x86_64.exe src/installer/main.ts",
+    "build:installers": "deno task build:installer:linux && deno task build:installer:windows",
+    "verify": "deno fmt --check && deno lint && deno task check && deno test -A"
   },
   "imports": {
     "@std/assert": "https://deno.land/std@0.219.0/assert/mod.ts",
@@ -22,11 +25,23 @@
     "indentWidth": 2,
     "semiColons": true,
     "singleQuote": false,
-    "exclude": ["dist/", "tests/fixtures/**/*.snbt"]
+    "exclude": [
+      "dist/",
+      "tests/fixtures/**/*.snbt"
+    ]
   },
   "lint": {
-    "rules": { "tags": ["recommended"] },
-    "exclude": ["dist/"]
+    "rules": {
+      "tags": [
+        "recommended"
+      ]
+    },
+    "exclude": [
+      "dist/"
+    ]
   },
-  "exclude": ["dist/", ".tmp/"]
+  "exclude": [
+    "dist/",
+    ".tmp/"
+  ]
 }
