@@ -575,3 +575,60 @@ Deno.test("cancellation leaves a usable cache and no partial output", async () =
     assertEquals(report.failed.length, 0);
   });
 });
+
+Deno.test("end to end: a corrupt cache entry is refused and retranslated", async () => {
+  await harness(async (h) => {
+    // Prime a real cache file, then poison one entry the way a bad provider
+    // response or an older, weaker validator would have.
+    assertEquals(await run(baseArgs(h), deps(h)), 0, h.stderr.join("\n"));
+
+    let cachePath = "";
+    for await (const entry of Deno.readDir(h.cacheDir)) {
+      if (entry.isFile && entry.name.endsWith(".json")) cachePath = `${h.cacheDir}/${entry.name}`;
+    }
+    assertEquals(cachePath === "", false, "no cache file was written");
+
+    const file = JSON.parse(await Deno.readTextFile(cachePath));
+    const ids = Object.keys(file.entries);
+    assertEquals(ids.length > 0, true);
+    // Blank one entry out entirely: a non-empty source may never translate to "".
+    file.entries[ids[0]] = { text: "", model: "echo" };
+    await Deno.writeTextFile(cachePath, JSON.stringify(file, null, 2));
+
+    const second = { ...h, stdout: [] as string[], stderr: [] as string[] };
+    assertEquals(
+      await run(baseArgs(h, ["--output", `${h.dir}/again.zip`]), deps(second)),
+      0,
+      second.stderr.join("\n"),
+    );
+
+    // The poisoned string came back from the provider, not from the cache.
+    const report = JSON.parse(await Deno.readTextFile(`${h.dir}/again.report.json`));
+    assertEquals(report.translated > 0, true, "the corrupt entry was reused");
+    assertEquals(report.failed.length, 0);
+
+    // And nothing empty reached the archive.
+    const zip = await readZip(await Deno.readFile(`${h.dir}/again.zip`));
+    const snbt = await zip.readText("config/ftbquests/quests/lang/ja_jp.snbt");
+    const root = parseSnbt(snbt);
+    const sourceRoot = parseSnbt(LANG);
+    for (const member of root.members) {
+      if (member.value.type !== "string") continue;
+      const source = sourceRoot.members.find((m) => m.key === member.key)!;
+      if (source.value.type !== "string" || source.value.value.trim() === "") continue;
+      assertEquals(member.value.value.trim() === "", false, `${member.key} was emptied`);
+    }
+
+    // The poisoned entry was replaced on disk rather than left to fail again.
+    const after = JSON.parse(await Deno.readTextFile(cachePath));
+    assertEquals(after.entries[ids[0]]?.text.trim() === "", false, "the empty entry survived");
+    const third = { ...h, stdout: [] as string[], stderr: [] as string[] };
+    assertEquals(
+      await run(baseArgs(h, ["--output", `${h.dir}/third.zip`]), deps(third)),
+      0,
+      third.stderr.join("\n"),
+    );
+    const thirdReport = JSON.parse(await Deno.readTextFile(`${h.dir}/third.report.json`));
+    assertEquals(thirdReport.translated, 0, "the third run should be a pure cache hit");
+  });
+});

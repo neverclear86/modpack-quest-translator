@@ -21,10 +21,10 @@ const KEY = {
 Deno.test("a stored translation is found again with the same key fields", async () => {
   await withTempDir(async (dir) => {
     const cache = await TranslationCache.open(dir, KEY);
-    assertEquals(cache.get("Hello", "haiku"), undefined);
+    assertEquals(cache.get("Hello", { model: "haiku" }), undefined);
     cache.set("Hello", "haiku", "こんにちは");
-    assertEquals(cache.get("Hello", "haiku")?.text, "こんにちは");
-    assertEquals(cache.get("Hello", "haiku")?.model, "haiku");
+    assertEquals(cache.get("Hello", { model: "haiku" })?.text, "こんにちは");
+    assertEquals(cache.get("Hello", { model: "haiku" })?.model, "haiku");
   });
 });
 
@@ -44,10 +44,10 @@ Deno.test("changing any key field misses the cache", async () => {
       ]
     ) {
       const other = await TranslationCache.open(dir, { ...KEY, ...override });
-      assertEquals(other.get("Hello", "haiku"), undefined, JSON.stringify(override));
+      assertEquals(other.get("Hello", { model: "haiku" }), undefined, JSON.stringify(override));
     }
     const same = await TranslationCache.open(dir, KEY);
-    assertEquals(same.get("Hello", "haiku")?.text, "こんにちは");
+    assertEquals(same.get("Hello", { model: "haiku" })?.text, "こんにちは");
   });
 });
 
@@ -55,7 +55,7 @@ Deno.test("a different source text misses the cache", async () => {
   await withTempDir(async (dir) => {
     const cache = await TranslationCache.open(dir, KEY);
     cache.set("Hello", "haiku", "こんにちは");
-    assertEquals(cache.get("Hello there", "haiku"), undefined);
+    assertEquals(cache.get("Hello there", { model: "haiku" }), undefined);
   });
 });
 
@@ -65,7 +65,7 @@ Deno.test("a fallback-model entry is still reused on resume", async () => {
   await withTempDir(async (dir) => {
     const cache = await TranslationCache.open(dir, KEY);
     cache.set("Long prose here", "sonnet", "長い文章");
-    const hit = cache.get("Long prose here", "haiku", "sonnet");
+    const hit = cache.get("Long prose here", { model: "haiku", fallbackModel: "sonnet" });
     assertEquals(hit?.text, "長い文章");
     assertEquals(hit?.model, "sonnet");
   });
@@ -76,7 +76,7 @@ Deno.test("the primary model wins when both namespaces have an entry", async () 
     const cache = await TranslationCache.open(dir, KEY);
     cache.set("Text", "sonnet", "SONNET");
     cache.set("Text", "haiku", "HAIKU");
-    assertEquals(cache.get("Text", "haiku", "sonnet")?.text, "HAIKU");
+    assertEquals(cache.get("Text", { model: "haiku", fallbackModel: "sonnet" })?.text, "HAIKU");
   });
 });
 
@@ -86,7 +86,7 @@ Deno.test("entries survive a flush and reopen", async () => {
     first.set("Persisted", "haiku", "永続");
     await first.flush();
     const second = await TranslationCache.open(dir, KEY);
-    assertEquals(second.get("Persisted", "haiku")?.text, "永続");
+    assertEquals(second.get("Persisted", { model: "haiku" })?.text, "永続");
   });
 });
 
@@ -99,10 +99,10 @@ Deno.test("a corrupt cache file is discarded rather than failing the run", async
       if (entry.isFile) await Deno.writeTextFile(`${dir}/${entry.name}`, "{ not json");
     }
     const reopened = await TranslationCache.open(dir, KEY);
-    assertEquals(reopened.get("A", "haiku"), undefined);
+    assertEquals(reopened.get("A", { model: "haiku" }), undefined);
     reopened.set("A", "haiku", "あ");
     await reopened.flush();
-    assertEquals((await TranslationCache.open(dir, KEY)).get("A", "haiku")?.text, "あ");
+    assertEquals((await TranslationCache.open(dir, KEY)).get("A", { model: "haiku" })?.text, "あ");
   });
 });
 
@@ -121,7 +121,7 @@ Deno.test("a disabled cache never stores or returns anything", async () => {
   await withTempDir(async (dir) => {
     const cache = await TranslationCache.open(dir, KEY, { enabled: false });
     cache.set("Hello", "haiku", "こんにちは");
-    assertEquals(cache.get("Hello", "haiku"), undefined);
+    assertEquals(cache.get("Hello", { model: "haiku" }), undefined);
     await cache.flush();
     const names: string[] = [];
     for await (const entry of Deno.readDir(dir)) names.push(entry.name);
@@ -133,9 +133,9 @@ Deno.test("stats report hits and stores", async () => {
   await withTempDir(async (dir) => {
     const cache = await TranslationCache.open(dir, KEY);
     cache.set("A", "haiku", "あ");
-    cache.get("A", "haiku");
-    cache.get("B", "haiku");
-    assertEquals(cache.stats(), { entries: 1, hits: 1, misses: 1, stores: 1 });
+    cache.get("A", { model: "haiku" });
+    cache.get("B", { model: "haiku" });
+    assertEquals(cache.stats(), { entries: 1, hits: 1, misses: 1, stores: 1, rejected: 0 });
   });
 });
 
@@ -175,8 +175,8 @@ Deno.test("an entry stored while a flush is in flight is not lost", async () => 
     await cache.flush();
 
     const reopened = await TranslationCache.open(dir, KEY);
-    assertEquals(reopened.get("First", "haiku")?.text, "1");
-    assertEquals(reopened.get("Second", "haiku")?.text, "2");
+    assertEquals(reopened.get("First", { model: "haiku" })?.text, "1");
+    assertEquals(reopened.get("Second", { model: "haiku" })?.text, "2");
   });
 });
 
@@ -195,7 +195,74 @@ Deno.test("concurrent flushes never drop an entry", async () => {
 
     const reopened = await TranslationCache.open(dir, KEY);
     for (let i = 0; i < 25; i++) {
-      assertEquals(reopened.get(`Source ${i}`, "haiku")?.text, `翻訳 ${i}`, `entry ${i} was lost`);
+      assertEquals(
+        reopened.get(`Source ${i}`, { model: "haiku" })?.text,
+        `翻訳 ${i}`,
+        `entry ${i} was lost`,
+      );
     }
+  });
+});
+
+Deno.test("an entry the caller rejects is a miss, not a hit", async () => {
+  await withTempDir(async (dir) => {
+    const cache = await TranslationCache.open(dir, KEY);
+    cache.set("You need %s more", "haiku", "あと必要");
+    assertEquals(
+      cache.get("You need %s more", { model: "haiku", accept: () => false }),
+      undefined,
+    );
+    const stats = cache.stats();
+    assertEquals(stats.hits, 0);
+    assertEquals(stats.misses, 1);
+    assertEquals(stats.rejected, 1);
+  });
+});
+
+Deno.test("a rejected entry is dropped so it is never offered again", async () => {
+  await withTempDir(async (dir) => {
+    const cache = await TranslationCache.open(dir, KEY);
+    cache.set("Hello", "haiku", "corrupt");
+    assertEquals(cache.get("Hello", { model: "haiku", accept: () => false }), undefined);
+    // Even a caller that would now accept anything must not see it.
+    assertEquals(cache.get("Hello", { model: "haiku", accept: () => true }), undefined);
+    await cache.flush();
+    const reopened = await TranslationCache.open(dir, KEY);
+    assertEquals(reopened.get("Hello", { model: "haiku" }), undefined);
+  });
+});
+
+Deno.test("the fallback namespace is revalidated too", async () => {
+  await withTempDir(async (dir) => {
+    const cache = await TranslationCache.open(dir, KEY);
+    cache.set("Long prose", "sonnet", "壊れた");
+    assertEquals(
+      cache.get("Long prose", { model: "haiku", fallbackModel: "sonnet", accept: () => false }),
+      undefined,
+    );
+    assertEquals(
+      cache.get("Long prose", { model: "haiku", fallbackModel: "sonnet" }),
+      undefined,
+      "the rejected fallback entry survived",
+    );
+  });
+});
+
+Deno.test("an accepted entry is still a hit and is not disturbed", async () => {
+  await withTempDir(async (dir) => {
+    const cache = await TranslationCache.open(dir, KEY);
+    cache.set("Hello", "haiku", "こんにちは");
+    const seen: string[] = [];
+    const hit = cache.get("Hello", {
+      model: "haiku",
+      accept: (entry) => {
+        seen.push(entry.text);
+        return true;
+      },
+    });
+    assertEquals(hit?.text, "こんにちは");
+    assertEquals(seen, ["こんにちは"]);
+    assertEquals(cache.stats().hits, 1);
+    assertEquals(cache.stats().rejected, 0);
   });
 });

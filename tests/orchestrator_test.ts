@@ -290,7 +290,7 @@ Deno.test("successful translations are written to the cache and flushed per batc
     const names: string[] = [];
     for await (const entry of Deno.readDir(dir)) names.push(entry.name);
     assertEquals(names.length, 1);
-    assertEquals(cache.get("First long string", "haiku")?.text, "JA:First long string");
+    assertEquals(cache.get("First long string", { model: "haiku" })?.text, "JA:First long string");
   });
 });
 
@@ -415,5 +415,95 @@ Deno.test("a multiline value that keeps its line breaks is accepted", async () =
     const result = await translateUnits(units([source]), { ...BASE, provider: echo(), cache });
     assertEquals(result.translations.get("quest.0.title"), `JA:${source}`);
     assertEquals(result.report.failed.length, 0);
+  });
+});
+
+Deno.test("a cached translation that no longer validates is retranslated", async () => {
+  await withCache(async (cache) => {
+    // A cache written before the placeholder detector understood %02d, so the
+    // stored value silently lost the zero padding.
+    cache.set("Countdown %02d minutes remaining", "haiku", "残り %2d 分");
+    const provider = echo();
+    const result = await translateUnits(units(["Countdown %02d minutes remaining"]), {
+      ...BASE,
+      provider,
+      cache,
+    });
+
+    assertEquals(provider.calls.length, 1, "the invalid entry was reused instead of retranslated");
+    assertEquals(
+      result.translations.get("quest.0.title"),
+      "JA:Countdown %02d minutes remaining",
+    );
+    assertEquals(result.report.cached, 0);
+    assertEquals(result.report.translated, 1);
+    assertEquals(cache.stats().rejected, 1);
+  });
+});
+
+Deno.test("the provider's output replaces the rejected cache entry", async () => {
+  await withCache(async (cache) => {
+    cache.set("You need %s more iron", "haiku", "鉄がもっと必要");
+    await translateUnits(units(["You need %s more iron"]), { ...BASE, provider: echo(), cache });
+    await cache.flush();
+
+    const reused = cache.get("You need %s more iron", { model: "haiku", fallbackModel: "sonnet" });
+    assertEquals(reused?.text, "JA:You need %s more iron");
+  });
+});
+
+Deno.test("a cached translation is revalidated against the current glossary", async () => {
+  await withCache(async (cache) => {
+    // Cached under a run with no glossary; this run demands "Create" verbatim.
+    cache.set("The Create mod adds Ponder scenes", "haiku", "クリエイトモッドはポンダーを追加");
+    const provider = new FakeProvider((request, options) => ({
+      items: request.items.map((i) => ({ id: i.id, text: `Create: ${i.text}` })),
+      model: options.model,
+    }));
+    const result = await translateUnits(units(["The Create mod adds Ponder scenes"]), {
+      ...BASE,
+      glossary: { Create: "Create" },
+      provider,
+      cache,
+    });
+
+    assertEquals(provider.calls.length, 1);
+    assertEquals(result.report.cached, 0);
+    assertEquals(
+      result.translations.get("quest.0.title"),
+      "Create: The Create mod adds Ponder scenes",
+    );
+  });
+});
+
+Deno.test("a cached translation that still validates is reused without the provider", async () => {
+  await withCache(async (cache) => {
+    cache.set("You need %s more iron", "haiku", "鉄が %s 個必要です");
+    const provider = echo();
+    const result = await translateUnits(units(["You need %s more iron"]), {
+      ...BASE,
+      provider,
+      cache,
+    });
+
+    assertEquals(provider.calls.length, 0);
+    assertEquals(result.report.cached, 1);
+    assertEquals(result.translations.get("quest.0.title"), "鉄が %s 個必要です");
+  });
+});
+
+Deno.test("a cached translation that lost the source's line breaks is retranslated", async () => {
+  await withCache(async (cache) => {
+    cache.set("First line\nSecond line", "haiku", "一行目 二行目");
+    const provider = echo();
+    const result = await translateUnits(units(["First line\nSecond line"]), {
+      ...BASE,
+      provider,
+      cache,
+    });
+
+    assertEquals(provider.calls.length, 1);
+    assertEquals(result.report.cached, 0);
+    assertEquals(result.translations.get("quest.0.title"), "JA:First line\nSecond line");
   });
 });

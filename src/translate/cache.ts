@@ -33,6 +33,26 @@ export interface CacheStats {
   hits: number;
   misses: number;
   stores: number;
+  /** Entries that were found but failed revalidation and were discarded. */
+  rejected: number;
+}
+
+export interface CacheLookup {
+  model: string;
+  /** Also consulted, so a string rescued by the stronger model is still reused. */
+  fallbackModel?: string;
+  /**
+   * Revalidation gate, run against every candidate before it is handed back.
+   * An entry that fails is discarded and the lookup continues as a miss.
+   *
+   * A cache entry is a translation that some *earlier* run validated, against
+   * that run's source text, glossary and validation rules. All three can have
+   * changed since -- the pack updated, `--glossary` gained a term, the tool
+   * learned to check something it used to miss -- and the file itself is
+   * user-editable. Reusing an entry without re-checking it is the one path
+   * that can put an unvalidated string into an "all keys validated" archive.
+   */
+  accept?: (entry: CacheEntry) => boolean;
 }
 
 /** Stable identity for a glossary, so changing it invalidates the cache. */
@@ -61,6 +81,7 @@ export class TranslationCache {
   #hits = 0;
   #misses = 0;
   #stores = 0;
+  #rejected = 0;
 
   private constructor(
     path: string,
@@ -101,15 +122,29 @@ export class TranslationCache {
     return new TranslationCache(path, key, entries, enabled);
   }
 
-  /** Look up in the primary model's namespace, then the fallback's. */
-  get(sourceText: string, model: string, fallbackModel?: string): CacheEntry | undefined {
+  /**
+   * Look up in the primary model's namespace, then the fallback's. Nothing is
+   * returned that `lookup.accept` rejects; see CacheLookup for why that gate
+   * exists at all.
+   */
+  get(sourceText: string, lookup: CacheLookup): CacheEntry | undefined {
     if (!this.#enabled) return undefined;
-    for (const candidate of fallbackModel ? [model, fallbackModel] : [model]) {
-      const entry = this.#entries.get(this.#id(sourceText, candidate));
-      if (entry) {
-        this.#hits++;
-        return entry;
+    const candidates = lookup.fallbackModel ? [lookup.model, lookup.fallbackModel] : [lookup.model];
+    for (const candidate of candidates) {
+      const id = this.#id(sourceText, candidate);
+      const entry = this.#entries.get(id);
+      if (!entry) continue;
+      if (lookup.accept && !lookup.accept(entry)) {
+        // Drop it rather than merely skip it: an entry that cannot be trusted
+        // now will not become trustworthy on the next run, and leaving it would
+        // make every future run pay to rediscover the same problem.
+        this.#entries.delete(id);
+        this.#dirty = true;
+        this.#rejected++;
+        continue;
       }
+      this.#hits++;
+      return entry;
     }
     this.#misses++;
     return undefined;
@@ -164,6 +199,7 @@ export class TranslationCache {
       hits: this.#hits,
       misses: this.#misses,
       stores: this.#stores,
+      rejected: this.#rejected,
     };
   }
 

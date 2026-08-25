@@ -105,7 +105,17 @@ export async function translateUnits(
 
   const representatives: TranslationUnit[] = [];
   for (const group of byText.values()) {
-    const cached = options.cache.get(group[0].text, options.model, options.fallbackModel);
+    // Every unit in the group shares the same source text, so revalidating the
+    // representative settles the whole group. A cached entry is only as good as
+    // the run that produced it: it is re-checked against this run's unit and
+    // glossary, and a failure is a miss, not a shortcut.
+    const representative = group[0];
+    const cached = options.cache.get(representative.text, {
+      model: options.model,
+      fallbackModel: options.fallbackModel,
+      accept: (entry) =>
+        validateUnit(representative, entry.text, { glossary: options.glossary }).ok,
+    });
     if (cached) {
       for (const unit of group) {
         translations.set(unit.id, cached.text);
@@ -149,6 +159,9 @@ export async function translateUnits(
   };
 
   await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
+  // Also persists any entry dropped by revalidation above, even on a run that
+  // had no batches to flush after.
+  await options.cache.flush();
   throwIfCancelled(options.signal);
 
   if (report.failed.length > 0) {
