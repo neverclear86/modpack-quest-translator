@@ -1,12 +1,13 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { AppError } from "../src/errors.ts";
 import { readZip } from "../src/archive/zip/reader.ts";
-import { buildOverlay, resolveOutputPlan } from "../src/output/package.ts";
+import { buildArtifact, resolveOutputPlan } from "../src/output/package.ts";
 import { Redactor } from "../src/util/redact.ts";
 
 const TRANSLATED = '{\n\tquest.A.title: "歯車"\n}\n';
 
 const BASE_META = {
+  artifact: "snbt-overlay" as const,
   toolVersion: "1.0.0",
   generatedAt: "2026-08-25T00:00:00.000Z",
   sourceUrl: "https://modrinth.com/modpack/rubius-cobblemon",
@@ -45,8 +46,8 @@ async function tempDir(): Promise<string> {
 
 Deno.test("target-locale mode writes lang/ja_jp.snbt at the instance root", async () => {
   const zip = await readZip(
-    await buildOverlay({
-      translatedSnbt: TRANSLATED,
+    await buildArtifact({
+      payload: TRANSLATED,
       meta: BASE_META,
       report: BASE_REPORT,
       layout: "instance",
@@ -59,8 +60,8 @@ Deno.test("target-locale mode writes lang/ja_jp.snbt at the instance root", asyn
 
 Deno.test("english-override mode writes lang/en_us.snbt instead", async () => {
   const zip = await readZip(
-    await buildOverlay({
-      translatedSnbt: TRANSLATED,
+    await buildArtifact({
+      payload: TRANSLATED,
       meta: { ...BASE_META, overrideEnglish: true },
       report: BASE_REPORT,
       layout: "instance",
@@ -73,8 +74,8 @@ Deno.test("english-override mode writes lang/en_us.snbt instead", async () => {
 
 Deno.test("overrides layout wraps the path and both layout emits each once", async () => {
   const overrides = await readZip(
-    await buildOverlay({
-      translatedSnbt: TRANSLATED,
+    await buildArtifact({
+      payload: TRANSLATED,
       meta: BASE_META,
       report: BASE_REPORT,
       layout: "overrides",
@@ -85,8 +86,8 @@ Deno.test("overrides layout wraps the path and both layout emits each once", asy
   assertEquals(overrides.has("config/ftbquests/quests/lang/ja_jp.snbt"), false);
 
   const both = await readZip(
-    await buildOverlay({
-      translatedSnbt: TRANSLATED,
+    await buildArtifact({
+      payload: TRANSLATED,
       meta: BASE_META,
       report: BASE_REPORT,
       layout: "both",
@@ -99,8 +100,8 @@ Deno.test("overrides layout wraps the path and both layout emits each once", asy
 
 Deno.test("the archive carries a manifest, a report and a bilingual README", async () => {
   const zip = await readZip(
-    await buildOverlay({
-      translatedSnbt: TRANSLATED,
+    await buildArtifact({
+      payload: TRANSLATED,
       meta: BASE_META,
       report: BASE_REPORT,
       layout: "instance",
@@ -128,8 +129,8 @@ Deno.test("the archive carries a manifest, a report and a bilingual README", asy
 
 Deno.test("the README states exactly how to install for the chosen layout", async () => {
   const instance = await readZip(
-    await buildOverlay({
-      translatedSnbt: TRANSLATED,
+    await buildArtifact({
+      payload: TRANSLATED,
       meta: BASE_META,
       report: BASE_REPORT,
       layout: "instance",
@@ -144,8 +145,8 @@ Deno.test("the README states exactly how to install for the chosen layout", asyn
 
 Deno.test("the README documents the multiplayer consequences of en_us override", async () => {
   const zip = await readZip(
-    await buildOverlay({
-      translatedSnbt: TRANSLATED,
+    await buildArtifact({
+      payload: TRANSLATED,
       meta: { ...BASE_META, overrideEnglish: true },
       report: BASE_REPORT,
       layout: "instance",
@@ -161,8 +162,8 @@ Deno.test("the README documents the multiplayer consequences of en_us override",
 
 Deno.test("the archive contains no mod jars or pack assets", async () => {
   const zip = await readZip(
-    await buildOverlay({
-      translatedSnbt: TRANSLATED,
+    await buildArtifact({
+      payload: TRANSLATED,
       meta: BASE_META,
       report: BASE_REPORT,
       layout: "both",
@@ -178,8 +179,8 @@ Deno.test("the archive contains no mod jars or pack assets", async () => {
 Deno.test("no credential ever reaches the archive", async () => {
   const redactor = new Redactor();
   redactor.register("$2a$10$curseforgesecretvalue");
-  const bytes = await buildOverlay({
-    translatedSnbt: TRANSLATED,
+  const bytes = await buildArtifact({
+    payload: TRANSLATED,
     meta: {
       ...BASE_META,
       sourceUrl: "https://example.com/pack.zip?api_key=$2a$10$curseforgesecretvalue",
@@ -198,13 +199,13 @@ Deno.test("no credential ever reaches the archive", async () => {
 
 Deno.test("packaging is deterministic for identical input", async () => {
   const args = {
-    translatedSnbt: TRANSLATED,
+    payload: TRANSLATED,
     meta: BASE_META,
     report: BASE_REPORT,
     layout: "instance" as const,
     redactor: new Redactor(),
   };
-  assertEquals(await buildOverlay(args), await buildOverlay(args));
+  assertEquals(await buildArtifact(args), await buildArtifact(args));
 });
 
 Deno.test("an explicit .zip output path is used verbatim with sidecars beside it", async () => {
@@ -215,7 +216,7 @@ Deno.test("an explicit .zip output path is used verbatim with sidecars beside it
     assertEquals(plan.manifestPath, `${dir}/aca-ja.manifest.json`);
     assertEquals(plan.reportPath, `${dir}/aca-ja.report.json`);
     assertEquals(plan.readmePath, `${dir}/aca-ja.README.md`);
-    assertEquals(plan.rawSnbtPath, `${dir}/aca-ja.ja_jp.snbt`);
+    assertEquals(plan.rawPayloadPath, `${dir}/aca-ja.ja_jp.snbt`);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -245,6 +246,63 @@ Deno.test("an existing output file is never silently overwritten", async () => {
   }
 });
 
+Deno.test("an existing sidecar is refused just as loudly as the archive", async () => {
+  // Regression: only the archive path was checked, so a run could get all the
+  // way to packaging and then overwrite a previous run's manifest, report or
+  // README.
+  const dir = await tempDir();
+  try {
+    for (const sidecar of ["aca-ja.manifest.json", "aca-ja.report.json", "aca-ja.README.md"]) {
+      await Deno.writeTextFile(`${dir}/${sidecar}`, "existing");
+      const error = await assertRejects(
+        () => resolveOutputPlan(`${dir}/aca-ja.zip`, BASE_META),
+        AppError,
+      ) as AppError;
+      assertEquals(error.code, "E_WRITE");
+      assertStringIncludes(error.message, sidecar);
+      await Deno.remove(`${dir}/${sidecar}`);
+    }
+
+    // The raw payload is only written when it was asked for, so it only counts
+    // when it was asked for.
+    await Deno.writeTextFile(`${dir}/aca-ja.ja_jp.snbt`, "existing");
+    assertEquals(
+      (await resolveOutputPlan(`${dir}/aca-ja.zip`, BASE_META)).archivePath,
+      `${dir}/aca-ja.zip`,
+    );
+    await assertRejects(
+      () => resolveOutputPlan(`${dir}/aca-ja.zip`, BASE_META, { emitRaw: true }),
+      AppError,
+    );
+    assertEquals(
+      (await resolveOutputPlan(`${dir}/aca-ja.zip`, BASE_META, { emitRaw: true, force: true }))
+        .rawPayloadPath,
+      `${dir}/aca-ja.ja_jp.snbt`,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("every colliding output path is named at once, not one run at a time", async () => {
+  const dir = await tempDir();
+  try {
+    for (const name of ["aca-ja.zip", "aca-ja.report.json", "aca-ja.README.md"]) {
+      await Deno.writeTextFile(`${dir}/${name}`, "existing");
+    }
+    const error = await assertRejects(
+      () => resolveOutputPlan(`${dir}/aca-ja.zip`, BASE_META),
+      AppError,
+    ) as AppError;
+    for (const name of ["aca-ja.zip", "aca-ja.report.json", "aca-ja.README.md"]) {
+      assertStringIncludes(error.message, name);
+    }
+    assertEquals(error.message.includes("aca-ja.manifest.json"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("output file names are filesystem safe", async () => {
   const dir = await tempDir();
   try {
@@ -262,8 +320,8 @@ Deno.test("output file names are filesystem safe", async () => {
 
 Deno.test("the README qualifies its server/client advice against the detected FTB Quests version", async () => {
   const known = await readZip(
-    await buildOverlay({
-      translatedSnbt: TRANSLATED,
+    await buildArtifact({
+      payload: TRANSLATED,
       meta: { ...BASE_META, overrideEnglish: true, questModVersion: "2101.1.10" },
       report: BASE_REPORT,
       layout: "instance",
@@ -277,8 +335,8 @@ Deno.test("the README qualifies its server/client advice against the detected FT
   // When it cannot be detected the README must say so rather than imply it was
   // checked: the advice is only as good as the evidence behind it.
   const unknown = await readZip(
-    await buildOverlay({
-      translatedSnbt: TRANSLATED,
+    await buildArtifact({
+      payload: TRANSLATED,
       meta: { ...BASE_META, overrideEnglish: true },
       report: BASE_REPORT,
       layout: "instance",
@@ -292,8 +350,8 @@ Deno.test("the README qualifies its server/client advice against the detected FT
 
 Deno.test("the detected FTB Quests version is recorded in the manifest", async () => {
   const zip = await readZip(
-    await buildOverlay({
-      translatedSnbt: TRANSLATED,
+    await buildArtifact({
+      payload: TRANSLATED,
       meta: {
         ...BASE_META,
         questModVersion: "2101.1.10",

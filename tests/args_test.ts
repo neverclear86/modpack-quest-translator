@@ -108,6 +108,24 @@ Deno.test("--max-download accepts human sizes", () => {
   assertThrows(() => parseArgs([...MIN, "--max-download", "big"]), AppError);
 });
 
+Deno.test("--max-download is finite and bounded", () => {
+  // Regression: a digit string long enough to overflow a double parsed as
+  // Infinity, which passed `> 0` and then disabled every size limit derived
+  // from it -- including the ZIP reader's total-inflation cap.
+  for (
+    const value of ["9".repeat(400), "1e309", `${Number.MAX_SAFE_INTEGER}`, "1000GB", "17179869185"]
+  ) {
+    const error = assertThrows(
+      () => parseArgs([...MIN, "--max-download", value]),
+      AppError,
+    ) as AppError;
+    assertEquals(error.code, "E_INVALID_INPUT", value);
+  }
+  const largest = parseArgs([...MIN, "--max-download", "16GiB"]).maxDownloadBytes;
+  assertEquals(largest, 16 * 1024 ** 3);
+  assertEquals(Number.isSafeInteger(largest * 4), true);
+});
+
 Deno.test("--layout is validated", () => {
   assertEquals(parseArgs([...MIN, "--layout", "overrides"]).layout, "overrides");
   assertThrows(() => parseArgs([...MIN, "--layout", "sideways"]), AppError);

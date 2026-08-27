@@ -1,8 +1,8 @@
 # modpack-quest-translator
 
 Translate a Minecraft modpack's **FTB Quests** text into another language and emit a
-ready-to-install overlay archive. The downloaded pack is never modified, and nothing from it is
-extracted to disk or executed.
+ready-to-install archive. The downloaded pack is never modified, and nothing from it is extracted to
+disk or executed.
 
 The headline use case: read quests in Japanese while Minecraft, JEI, Create and every other mod stay
 in English.
@@ -17,16 +17,24 @@ modpack-quest-translator \
 
 ## What it does and does not do
 
-It translates quest **titles, subtitles and descriptions** from
-`config/ftbquests/quests/lang/<locale>.snbt`, and emits a small ZIP containing that one translated
-file plus a bilingual README, a metadata manifest and a machine-readable report. That overlay can be
-packaged further into a double-clickable **installer bundle** for Windows and Linux, which saves the
-pack's own quest file before replacing it and can put it back byte for byte — see
-[Installing the overlay](#installing-the-overlay).
+It translates quest **titles, subtitles and descriptions**, and emits a small ZIP containing the one
+translated file plus a bilingual README, a metadata manifest and a machine-readable report.
+
+Packs store that text in one of two ways, and the tool has a mode for each — see
+[Two source formats, two outputs](#two-source-formats-two-outputs):
+
+| The pack's quest text lives in                                   | You get                                           |
+| ---------------------------------------------------------------- | ------------------------------------------------- |
+| `config/ftbquests/quests/lang/<locale>.snbt`                     | a **quest overlay** you extract into the instance |
+| `{translation.key}` placeholders backed by a mod's `lang/*.json` | a **Minecraft resource pack** you enable in-game  |
+
+An overlay can be packaged further into a double-clickable **installer bundle** for Windows and
+Linux, which saves the pack's own quest file before replacing it and can put it back byte for byte —
+see [Installing the overlay](#installing-the-overlay).
 
 It does **not** translate mod item/block/UI language files or Create Ponder scenes, does not edit
-quest topology, tasks, rewards or progression, and never repacks or redistributes the modpack. No
-mod JARs, pack assets or credentials are ever placed in the output.
+quest topology, tasks, rewards or progression, and never repacks or redistributes the modpack or any
+mod. No mod JARs, pack assets, source English files or credentials are ever placed in the output.
 
 ## Requirements
 
@@ -85,30 +93,41 @@ optional CurseForge key) and `--allow-run=claude` (the translation provider).
 ```text
 modpack-quest-translator --url <modpack-url> --target <language> --output <path> [options]
 modpack-quest-translator --archive <file.zip|.mrpack> --target <language> --output <path>
+modpack-quest-translator --archive <pack.zip> --lang-jar <mod.jar> -t <lang> -o <path>
 ```
 
 ### The four core inputs
 
-| Flag               | Meaning                                                                                                                             |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `-u, --url`        | CurseForge or Modrinth modpack project URL, a file/version URL pinning an exact release, or a direct `.zip`/`.mrpack` URL           |
-| `-t, --target`     | `ja_jp`, `ja-JP`, `ja`, `Japanese` or `日本語` — all resolve to the same locale, which is printed before work begins                |
-| `--override-en-us` | Emit the translation as `en_us.snbt` instead of `<locale>.snbt` (`--override-english <true\|false>` is the same switch spelled out) |
-| `-o, --output`     | An explicit `.zip` path, or a directory                                                                                             |
+| Flag               | Meaning                                                                                                                   |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `-u, --url`        | CurseForge or Modrinth modpack project URL, a file/version URL pinning an exact release, or a direct `.zip`/`.mrpack` URL |
+| `-t, --target`     | `ja_jp`, `ja-JP`, `ja`, `Japanese` or `日本語` — all resolve to the same locale, which is printed before work begins      |
+| `--override-en-us` | Emit the translation as `en_us` instead of `<locale>` (`--override-english <true\|false>` is the same switch spelled out) |
+| `-o, --output`     | An explicit `.zip` path, or a directory                                                                                   |
 
-`--url` and `--archive` are mutually exclusive; exactly one is required.
+`--url` and `--archive` are mutually exclusive; exactly one is required. Adding `--lang-jar`
+switches the output to a resource pack — see
+[Two source formats, two outputs](#two-source-formats-two-outputs).
 
 ### `--output` semantics
 
 Deterministic, and never destructive:
 
 - Ends in `.zip` → that exact file is the archive. Sidecars are written beside it as
-  `<base>.manifest.json`, `<base>.report.json`, `<base>.README.md`, and `<base>.<locale>.snbt` with
-  `--emit-raw`.
+  `<base>.manifest.json`, `<base>.report.json`, `<base>.README.md`, and
+  `<base>.<locale>.<snbt|json>` with `--emit-raw` — the extension follows the artefact.
 - Anything else → treated as a directory, created if needed. The archive is named
-  `<pack-slug>-<pack-version>-<locale>[-en_us-override].zip`, so the exact compatible pack version
-  is part of the filename and a newer pack release produces a new file.
-- An existing output file is **never** silently overwritten. That is exit code 8 unless `--force`.
+  `<pack-slug>-<pack-version>-<locale>[-en_us-override][-resourcepack].zip`, so the exact compatible
+  pack version is part of the filename and a newer pack release produces a new file.
+- An existing output file is **never** silently overwritten. That is exit code 8 unless `--force`,
+  and it covers **every** file the run would write — the archive, all three sidecars, and the raw
+  payload when `--emit-raw` asks for it. All of them are checked before anything is translated, and
+  every collision is reported at once.
+- Publication also uses an atomic create-if-absent operation, so a file created after that early
+  check is not overwritten. If a later sidecar loses such a race, outputs already published by this
+  run are conservatively left in place and named in the error. They are not deleted: a pathname can
+  be replaced immediately before unlink, and deleting a partial output is not worth risking somebody
+  else's file. The next run reports those leftovers during its early collision check.
 
 ### Override mode, and which one you want
 
@@ -135,6 +154,175 @@ unaffected.
 
 Every generated archive's README spells this out in English and Japanese.
 
+## Two source formats, two outputs
+
+### The default: an FTB Quests SNBT overlay
+
+Most modern packs export their quest text to `config/ftbquests/quests/lang/<locale>.snbt`. Nothing
+extra is needed: point the tool at the pack and it emits an overlay archive whose single entry is
+`config/ftbquests/quests/lang/<target>.snbt`. This is the mode every other section here describes,
+and it is unchanged.
+
+### `--lang-jar`: translation keys backed by a mod, emitted as a resource pack
+
+Some packs keep no quest prose in their quest files at all. Every visible string is a **translation
+key** and the English text lives in a mod:
+
+```snbt
+title: "{quest.guide.survival.fiber.title}"
+subtitle: "{quest.guide.survival.fiber.subtitle}"
+description: ["{quest.guide.survival.fiber.description_1}"]
+```
+
+```json
+// inside SomeMod.jar, at assets/<namespace>/lang/en_us.json
+{ "quest.guide.survival.fiber.title": "Fiber on Demand" }
+```
+
+There is no `lang/en_us.snbt` to translate, and an overlay could not help: those keys are resolved
+against the **mod's** language file. Minecraft merges resource-pack language files over a mod's own,
+key by key, so a resource pack is the supported way to replace exactly those strings and nothing
+else. Pass the mod jar with `--lang-jar` and that is what you get:
+
+```bash
+modpack-quest-translator \
+  --archive ./somepack.zip \
+  --lang-jar ./SomeMod-1.0.jar \
+  --target ja_jp --output ./dist
+```
+
+| Flag                    | Meaning                                                                                                     |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `--lang-jar <path>`     | Local mod jar providing `assets/<namespace>/lang/<source-locale>.json`. **Its presence selects this mode.** |
+| `--lang-namespace <ns>` | Force the namespace instead of deducing it. Only needed when detection reports ambiguity.                   |
+| `--pack-format <n>`     | `pack.mcmeta` `pack_format`. Default is derived from the pack's Minecraft version.                          |
+
+The flag is the mode switch, never a guess about the pack. A pack that happens to ship both an SNBT
+lang file and placeholder chapters uses whichever you asked for.
+
+#### What gets extracted
+
+Only the keys the quest files **actually reference**. Every `.snbt` under `config/ftbquests/quests/`
+— chapters, chapter groups, reward tables — is parsed, and every `{a.b.c}`-shaped placeholder in it
+is collected. A mod's `en_us.json` also carries its item names and GUI labels; translating those
+would quietly turn a quest translation into a whole-mod translation, so they are left alone. Values
+must be strings: a referenced key whose value is not one is refused rather than guessed at.
+
+FTB's own markup is not a translation key and is never collected — `{image:mod:tex.png width:100}`,
+`{item:minecraft:apple}` and `{player}` all contain a colon or lack a dot. Formatting codes (`&6`),
+escaped ampersands (`\&`) and printf tokens (`%s`, `%1$s`) are protected and validated exactly as in
+overlay mode.
+
+#### Automatic namespace detection, and when it refuses
+
+The namespace is decided by **evidence, not naming**. Every top-level
+`assets/<namespace>/lang/<source-locale>.json` in the jar is read, and a namespace is a candidate
+only if it defines keys the quest files reference.
+
+- **One candidate matches** → that is the answer.
+- **Several match, but one subsumes the rest** (it defines everything they do, and more) → that one
+  is chosen and the others are reported as alternates. There is nothing to choose between.
+- **Anything else** → refused with exit code 2, naming each namespace and how many of the referenced
+  keys it covers, and telling you to pass `--lang-namespace`:
+
+  ```text
+  error: Several namespaces in the language jar define the referenced quest keys:
+         alpha (2 of 13), beta (2 of 13)
+  hint:  Pass --lang-namespace <namespace> to say which one provides the quest text.
+  ```
+
+- **Nothing matches at all** → exit code 5, listing the namespaces the jar does ship, so you can see
+  whether you passed the wrong jar or the wrong `--source-locale`.
+
+- **Every candidate is unreadable** → exit code 2, naming each file and what is wrong with it
+  (malformed JSON, an array, no keys at all), rather than reporting the jar as shipping nothing.
+
+Nested trees such as `assets/tacz/x_default_gun/assets/bf1/lang/en_us.json` are not namespaces of
+the jar and are skipped; Minecraft only reads the top-level layout. A jar declaring more than 64
+candidate namespaces is refused rather than trawled — pass `--lang-namespace`.
+
+`--lang-namespace <ns>` is checked **first**, and it names exactly one file: that file is read and
+validated on its own, so the 64-namespace limit never stands in the way of the flag that exists to
+answer it, and a jar of a thousand namespaces works fine as long as you say which one you want. If
+the file you named is malformed, you are told that — with its path and the reason — instead of being
+told the namespace is not there.
+
+#### Known limitations, reported rather than papered over
+
+Two things this mode structurally cannot do. Both are counted on stdout, listed in full in
+`translation-report.json` and in the generated README, and **nothing is ever invented** for either:
+
+- **Referenced-but-missing keys.** A key the quest files reference that the source language file
+  does not define has no English text to translate. It is omitted from the resource pack, and the
+  game keeps showing the raw key.
+- **Hard-coded literal labels.** A `title`, `subtitle` or `description` typed straight into a quest
+  file — `"WIP"`, `"Any #minecraft:wool"` — has no translation key, so no resource pack can reach
+  it. Changing it would mean editing the modpack, which this tool never does.
+
+A quest file that fails to parse is reported too, since its references are unknown rather than
+absent — and so is one that could not be read out of the archive at all, for the same reason. Both
+are counted in the generated README and listed by path in `translation-report.json`, so a damaged
+entry never turns into a silently smaller translation.
+
+A pack with more than 500 quest files is **refused** rather than partly read. Every translated key
+comes from one of those files, so stopping at the limit would ship a resource pack missing quest
+text with nothing to say so.
+
+Run `--dry-run` to see all of it before spending anything:
+
+```text
+[3/7] inspect  curseforge archive, 33 quest file(s), strings from DCTweaks_5.10.14.jar!assets/deceasedcraft/lang/en_us.json
+      namespace deceasedcraft: 1269 referenced key(s), 1183 defined, 86 missing, 65 hard-coded label(s)
+```
+
+#### `pack.mcmeta` and Minecraft versions
+
+`pack_format` is derived from the pack's own Minecraft version (1.18 → 8 … 1.20/1.20.1 → **15** …
+1.21.4 → 46). When the version is unknown or newer than that table, `15` is used, the README says so
+explicitly, and `--pack-format <n>` overrides it. A wrong number only makes the launcher call the
+pack incompatible; it still loads if you enable it anyway.
+
+#### `--override-en-us` in resource-pack mode
+
+Supported, and it targets `assets/<namespace>/lang/en_us.json` deliberately. It is **safer here than
+in overlay mode**, because a resource pack is client-side: only the client that enables it is
+affected — never another player, never a server. The two documented consequences:
+
+- You keep an English game while quest text is translated. Only the quest keys are overridden; every
+  other string in the namespace is left to the mod.
+- `en_us` is Minecraft's **fallback** locale, so any language with no entry of its own for these
+  keys falls back to it. The translated quest text will also appear if you later switch to another
+  language the mod does not translate.
+
+| Mode               | Archive entry                    |
+| ------------------ | -------------------------------- |
+| default            | `assets/<ns>/lang/<target>.json` |
+| `--override-en-us` | `assets/<ns>/lang/en_us.json`    |
+
+`--layout` does not apply — a resource pack has exactly one layout — and passing it with
+`--lang-jar` is a usage error rather than a silently ignored flag. Likewise `--lang-namespace` and
+`--pack-format` without `--lang-jar`.
+
+## Installing a resource pack
+
+The generated archive **is** a resource pack. Do not unzip it.
+
+1. Copy the `.zip` as-is into your instance's `resourcepacks/` folder:
+   - MultiMC / Prism: the instance folder, then `.minecraft/resourcepacks/`
+   - CurseForge / vanilla launcher: `.minecraft/resourcepacks/`
+2. Start the game and open **Options → Resource Packs**.
+3. Move the pack to the right-hand side so it is enabled, and put it **above** anything else that
+   changes quest text.
+4. Unless it was built with `--override-en-us`, set your game language to the target locale.
+
+To remove it, disable it on that same screen or delete the `.zip`. Nothing else in the instance was
+touched, so there is nothing else to undo. The archive contains `pack.mcmeta`, the one language
+file, `README.md`, `translation-manifest.json` and `translation-report.json` — the extra files are
+ignored by the game.
+
+The installer bundle is for **overlays only**; a resource pack needs no installer, because enabling
+it replaces nothing on disk.
+
 ## Examples
 
 ```bash
@@ -147,6 +335,19 @@ modpack-quest-translator \
 
 # A local pack file, fully offline, zero cost - the fastest way to smoke-test
 modpack-quest-translator --archive ./pack.mrpack -t ja_jp -o ./dist --provider echo
+
+# DeceasedCraft 5.10.17: quest text is translation keys backed by DCTweaks.
+# Emits a Minecraft 1.20.1 resource pack; neither input file is modified.
+modpack-quest-translator \
+  --archive ./deceasedcraft-5.10.17.zip \
+  --lang-jar ./DCTweaks_5.10.14.jar \
+  --target ja_jp --output ./dist
+
+# ...and what that finds first: 33 quest files, 1269 referenced keys,
+# 1183 defined by assets/deceasedcraft/lang/en_us.json, 86 missing, 65 literals
+modpack-quest-translator \
+  --archive ./deceasedcraft-5.10.17.zip --lang-jar ./DCTweaks_5.10.14.jar \
+  -t ja_jp -o ./dist --dry-run
 
 # Keep technical terms verbatim
 modpack-quest-translator -u <url> -t ja_jp -o ./dist \
@@ -452,16 +653,25 @@ Modrinth needs no credentials at all.
 The installer executable has its own table, which extends this one:
 [installer exit codes](#running-the-installer-executable-directly).
 
-## Supported quest format
+## Supported quest formats
 
-v1 targets modern FTB Quests packs whose localization lives in
-`config/ftbquests/quests/lang/<locale>.snbt`. The instance root, `overrides/`, `server-overrides/`
-and `client-overrides/` are all searched, covering both CurseForge-format ZIPs and Modrinth
-`.mrpack` archives.
+Two, both through the same adapter seam:
 
-Quest formats are handled through adapters, so older inline FTB Quests data and other quest mods can
-be added without touching extraction, translation or packaging. When no adapter matches, the tool
-**reports the paths it did find** and exits 5 — it never silently produces an empty translation.
+| Adapter               | Source                                        | Output                  |
+| --------------------- | --------------------------------------------- | ----------------------- |
+| `ftbquests-lang`      | `config/ftbquests/quests/lang/<locale>.snbt`  | quest overlay archive   |
+| `minecraft-lang-json` | `assets/<ns>/lang/<locale>.json` in a mod jar | Minecraft resource pack |
+
+The instance root, `overrides/`, `server-overrides/` and `client-overrides/` are all searched,
+covering both CurseForge-format ZIPs and Modrinth `.mrpack` archives.
+
+Extraction, batching, the cache, the glossary, token preservation, validation, update diffs and
+packaging are written against translation **units**, not against a file format, so both modes share
+all of them — a new storage format is a new adapter and nothing else. Older inline FTB Quests data
+and other quest mods can be added the same way. When no adapter matches, the tool **reports the
+paths it did find** and exits 5 — it never silently produces an empty translation. If a pack has no
+SNBT lang file but its quest files do hold `{translation.key}` placeholders, that error names the
+keys it saw and tells you to re-run with `--lang-jar`.
 
 ## Security
 
@@ -472,6 +682,18 @@ be added without touching extraction, translation or packaging. When no adapter 
   reader.
 - Nothing from a downloaded pack is written to disk or executed. Only the quest lang file and
   chapter files are decompressed, in memory.
+- **A `--lang-jar` is data, and only data.** It is opened with the same bounded central-directory
+  ZIP reader as a modpack, so every defence above applies to it identically. Its size is checked
+  against the `--max-download` cap before a byte is inflated **and again against what was actually
+  read**, so a file that grew, was swapped, or never reported its size honestly is still refused
+  rather than inflated on the strength of its own `stat`. `--max-download` is itself bounded to a
+  finite, safe integer, since every other size limit is derived from it. Only
+  `assets/<namespace>/lang/<locale>.json` entries are read — no class file is touched, nothing is
+  extracted to disk, and nothing in it is ever executed. Neither the jar nor the modpack is
+  modified, and neither is redistributed: the output carries the translation only, never the source
+  `en_us.json`, the jar, mod bytecode or any pack file. The jar's **path on disk** is deliberately
+  not recorded either, since it can carry a user name; provenance is its base name, its SHA-256 and
+  the entry that was read.
 - HTTP is HTTPS/HTTP only, re-validated at every redirect hop, with https→http downgrades refused,
   bounded redirects, timeouts and a body cap enforced against real bytes.
 - Credentials and email addresses are scrubbed from every log line, error, report, manifest, README

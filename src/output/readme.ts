@@ -1,7 +1,8 @@
-import type { OverlayLayout, OverlayMeta } from "./types.ts";
+import type { ArtifactMeta, OverlayLayout } from "./types.ts";
+import { buildResourcePackReadme } from "./readme_resourcepack.ts";
 
 /** Where the translated file lands, per layout. */
-function entryPaths(meta: OverlayMeta, layout: OverlayLayout): string[] {
+function entryPaths(meta: ArtifactMeta, layout: OverlayLayout): string[] {
   const name = `${meta.overrideEnglish ? "en_us" : meta.targetLocale}.snbt`;
   const inner = `config/ftbquests/quests/lang/${name}`;
   if (layout === "overrides") return [`overrides/${inner}`];
@@ -13,8 +14,13 @@ function entryPaths(meta: OverlayMeta, layout: OverlayLayout): string[] {
  * Generates the bilingual install/update README that ships inside the archive.
  * It states exactly which install action applies, and spells out the
  * multiplayer consequences the requirements enumerate.
+ *
+ * The two artefacts are installed in genuinely different ways -- extract into an
+ * instance versus enable in Options -> Resource Packs -- and have opposite
+ * multiplayer stories, so each gets its own text rather than one hedged README.
  */
-export function buildReadme(meta: OverlayMeta, layout: OverlayLayout): string {
+export function buildReadme(meta: ArtifactMeta, layout: OverlayLayout): string {
+  if (meta.artifact === "resource-pack") return buildResourcePackReadme(meta);
   const paths = entryPaths(meta, layout);
   const primary = paths[0];
   const mode = meta.overrideEnglish ? "en_us override" : `target locale ${meta.targetLocale}`;

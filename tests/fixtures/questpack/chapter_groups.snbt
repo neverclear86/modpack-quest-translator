@@ -1,0 +1,6 @@
+{
+	chapter_groups: [
+		{ id: "410F2D717CE3690A", title: "{quest.main}" }
+		{ id: "4DDD3BC5FBA9AF8E", title: "{quest.guide}" }
+	]
+}

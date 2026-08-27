@@ -3,6 +3,9 @@ import type { ZipArchive } from "./zip/reader.ts";
 import { selectAdapter } from "../quests/registry.ts";
 import type { QuestFormatAdapter } from "../quests/adapter.ts";
 import type { ChapterFile } from "../quests/chapter_index.ts";
+import { minecraftLangJsonAdapter } from "../quests/lang_json.ts";
+import { referencedKeysIn, type ReferenceScan, scanQuestReferences } from "../quests/references.ts";
+import { scanLangJar, selectLangNamespace } from "./lang_jar.ts";
 
 export type ArchiveFlavour = "curseforge" | "modrinth" | "plain";
 
@@ -33,6 +36,16 @@ export interface QuestSource {
   questModVersion?: string;
   /** The jar the version was read from, for provenance. */
   questModFile?: string;
+
+  // ---- JSON language-file mode only ---------------------------------------
+  /** `assets/<namespace>/lang/...` the strings were read from. */
+  langNamespace?: string;
+  /** What the quest files referenced, and what they hard-coded. */
+  references?: ReferenceScan;
+  /** Referenced keys the language file defines, in referenced order. */
+  presentKeys?: string[];
+  /** Referenced keys nothing in the language file defines. */
+  missingKeys?: string[];
 }
 
 export interface DiscoverOptions {
@@ -41,11 +54,29 @@ export interface DiscoverOptions {
   maxChapterFiles?: number;
 }
 
+export interface DiscoverLangJsonOptions {
+  sourceLocale: string;
+  /** Force a namespace instead of deducing it from the referenced keys. */
+  namespace?: string;
+  /** Cap on quest files scanned for references. */
+  maxQuestFiles?: number;
+}
+
 /** Roots to search, in priority order. */
 const ROOTS = ["", "overrides/", "server-overrides/", "client-overrides/"];
 
 const QUEST_DIR = "config/ftbquests/quests";
+/**
+ * Chapter files are context for the translator, so reading fewer of them costs
+ * quality, not correctness, and the cap is a soft one.
+ */
 const DEFAULT_MAX_CHAPTER_FILES = 500;
+/**
+ * Quest files in JSON mode are the *selection*: every key that is translated
+ * comes from one. Reading fewer would not lose context, it would silently drop
+ * quest text from the output, so this cap refuses rather than truncates.
+ */
+const DEFAULT_MAX_QUEST_FILES = 500;
 
 export async function discoverQuestSource(
   archive: ZipArchive,
@@ -68,7 +99,7 @@ export async function discoverQuestSource(
     }
   }
 
-  if (matches.length === 0) throw noLocalization(archive, options.sourceLocale);
+  if (matches.length === 0) throw await noLocalization(archive, options.sourceLocale);
 
   const chosen = matches[0];
   const text = await archive.readText(chosen.path);
@@ -106,6 +137,160 @@ export async function discoverQuestSource(
     questModVersion: questMod?.version,
     questModFile: questMod?.file,
   };
+}
+
+/**
+ * Discovery for packs whose quest files hold `{translation.key}` placeholders
+ * and whose English strings live in a mod's language file.
+ *
+ * Three steps, each of which can fail with something the user can act on:
+ * find the quest files, read the keys they reference, then find the one
+ * namespace in the supplied jar that backs those keys. The jar is opened with
+ * the same bounded reader as the pack and only its language entries are read.
+ */
+export async function discoverLangJsonSource(
+  archive: ZipArchive,
+  jar: ZipArchive,
+  options: DiscoverLangJsonOptions,
+): Promise<QuestSource> {
+  const flavour = detectFlavour(archive);
+  const packInfo = await readPackInfo(archive, flavour);
+
+  const root = findQuestRoot(archive);
+  if (root === undefined) throw noQuestData(archive);
+
+  const { files: questFiles, unreadable } = await readQuestFiles(
+    archive,
+    root,
+    options.maxQuestFiles ?? DEFAULT_MAX_QUEST_FILES,
+  );
+  const references = scanQuestReferences(questFiles, unreadable);
+
+  if (references.keys.length === 0) {
+    throw new AppError(
+      "E_NO_QUEST_LOCALIZATION",
+      `The ${questFiles.length} quest file(s) under ${root}${QUEST_DIR}/ contain no ` +
+        `{translation.key} placeholder` +
+        (unreadable.length > 0
+          ? `, and ${unreadable.length} more could not be read: ${unreadable.join(", ")}`
+          : ""),
+      {
+        hint: "--lang-jar is for packs whose quest text is stored as translation keys backed " +
+          "by a mod's language file. This pack writes its quest text inline, so drop " +
+          "--lang-jar and translate its config/ftbquests/quests/lang/<locale>.snbt instead.",
+      },
+    );
+  }
+
+  const { candidates, malformed } = await scanLangJar(
+    jar,
+    options.sourceLocale,
+    options.namespace,
+  );
+  const selection = selectLangNamespace(
+    candidates,
+    references.keys,
+    options.namespace,
+    options.sourceLocale,
+    malformed,
+  );
+  const text = await jar.readText(selection.chosen.path);
+  const questMod = await detectQuestMod(archive, flavour);
+
+  return {
+    root,
+    path: selection.chosen.path,
+    text,
+    flavour,
+    packInfo,
+    adapter: minecraftLangJsonAdapter,
+    chapterFiles: questFiles,
+    alternates: selection.alternates.map((c) => c.path),
+    questModVersion: questMod?.version,
+    questModFile: questMod?.file,
+    langNamespace: selection.chosen.namespace,
+    references,
+    presentKeys: selection.matched,
+    missingKeys: selection.missing,
+  };
+}
+
+/** The first root that carries FTB Quests data at all. */
+function findQuestRoot(archive: ZipArchive): string | undefined {
+  for (const root of ROOTS) {
+    const prefix = `${root}${QUEST_DIR}/`;
+    if (archive.files().some((entry) => entry.path.startsWith(prefix))) return root;
+  }
+  return undefined;
+}
+
+interface QuestFilesRead {
+  files: ChapterFile[];
+  /** Entries that matched but could not be inflated out of the archive. */
+  unreadable: string[];
+}
+
+/**
+ * Every `.snbt` under the quest directory: chapters, groups, reward tables.
+ *
+ * The count is checked before anything is read. Stopping at the limit would
+ * mean translating a prefix of the pack's quests and packaging the result as if
+ * it were the whole thing, so exceeding it is refused instead -- the bound is
+ * kept, what it protects against is not silently delivered.
+ */
+async function readQuestFiles(
+  archive: ZipArchive,
+  root: string,
+  limit: number,
+): Promise<QuestFilesRead> {
+  const prefix = `${root}${QUEST_DIR}/`;
+  const wanted = archive.files().filter((entry) =>
+    entry.path.startsWith(prefix) &&
+    entry.path.toLowerCase().endsWith(".snbt") &&
+    // The pack's own lang file is not a source of references.
+    !entry.path.startsWith(`${prefix}lang/`)
+  );
+
+  if (wanted.length > limit) {
+    throw new AppError(
+      "E_UNSUPPORTED_PACK",
+      `This pack has ${wanted.length} quest files under ${prefix}, above the limit of ${limit}`,
+      {
+        hint: "Every translated key comes from one of these files, so reading only the first " +
+          `${limit} would produce a resource pack missing quest text without saying so. ` +
+          "Please report this pack: the limit is a guess about real packs, not a hard bound.",
+      },
+    );
+  }
+
+  const files: ChapterFile[] = [];
+  const unreadable: string[] = [];
+  for (const entry of wanted) {
+    try {
+      files.push({ path: entry.path, text: await archive.readText(entry.path) });
+    } catch {
+      // Not fatal, but not invisible either: the scan reports it as a file whose
+      // references are unknown, so nothing downstream claims to have read it.
+      unreadable.push(entry.path);
+    }
+  }
+  return { files, unreadable };
+}
+
+function noQuestData(archive: ZipArchive): AppError {
+  const paths = archive.files().map((e) => e.path).filter((p) => p.includes("ftbquests")).slice(
+    0,
+    20,
+  );
+  return new AppError(
+    "E_NO_QUEST_LOCALIZATION",
+    `No ${QUEST_DIR}/** data was found in this archive`,
+    {
+      hint: paths.length > 0
+        ? `Found related paths: ${paths.join(", ")}`
+        : "The pack may use a different questing mod, or quests may ship inside a mod jar.",
+    },
+  );
 }
 
 /**
@@ -216,13 +401,55 @@ async function readChapterFiles(
   return out;
 }
 
-function noLocalization(archive: ZipArchive, sourceLocale: string): AppError {
+/** Files to sample when deciding which "no lang file" story to tell. */
+const HINT_SAMPLE_FILES = 20;
+
+/**
+ * Translation keys referenced by a bounded sample of the pack's quest files.
+ * A raw-text scan is enough: this decides which sentence an error message ends
+ * with, not what gets translated.
+ */
+async function samplePlaceholders(archive: ZipArchive): Promise<string[]> {
+  const root = findQuestRoot(archive);
+  if (root === undefined) return [];
+  const keys: string[] = [];
+  let read = 0;
+  for (const entry of archive.files()) {
+    if (read >= HINT_SAMPLE_FILES || keys.length >= 3) break;
+    if (!entry.path.startsWith(`${root}${QUEST_DIR}/`)) continue;
+    if (!entry.path.toLowerCase().endsWith(".snbt")) continue;
+    read++;
+    try {
+      for (const key of referencedKeysIn(await archive.readText(entry.path))) {
+        if (!keys.includes(key)) keys.push(key);
+      }
+    } catch {
+      // A file we cannot read simply contributes nothing to the hint.
+    }
+  }
+  return keys;
+}
+
+async function noLocalization(archive: ZipArchive, sourceLocale: string): Promise<AppError> {
   const questPaths = archive.files()
     .map((e) => e.path)
     .filter((p) => p.includes(`${QUEST_DIR}/`))
-    .slice(0, 20);
+    .slice(0, HINT_SAMPLE_FILES);
 
-  const hint = questPaths.length > 0
+  // A pack whose quest files are full of `{translation.key}` placeholders is not
+  // broken and is not too old: its strings live in a mod, and there is a mode
+  // for that. Saying so here is the difference between a dead end and a next
+  // command to run.
+  const placeholders = await samplePlaceholders(archive);
+
+  const hint = placeholders.length > 0
+    ? `The quest files reference translation keys such as ${
+      placeholders.slice(0, 3).map((k) => `{${k}}`).join(", ")
+    } ` +
+      `instead of holding quest text, so their English strings live in a mod's ` +
+      `assets/<namespace>/lang/${sourceLocale}.json. Re-run with ` +
+      `--lang-jar <path-to-that-mod.jar> to translate them into a resource pack.`
+    : questPaths.length > 0
     ? `The archive does contain FTB Quests data, but no lang/${sourceLocale}.snbt. ` +
       `Found: ${questPaths.join(", ")}. This pack may predate FTB Quests' lang-file export, ` +
       `in which case quest text is still inline in the chapter files and is not supported in v1.`

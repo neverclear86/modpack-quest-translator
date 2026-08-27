@@ -1,7 +1,7 @@
 import { assert, assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { AppError } from "../src/errors.ts";
 import { readZip } from "../src/archive/zip/reader.ts";
-import { buildOverlay } from "../src/output/package.ts";
+import { buildArtifact } from "../src/output/package.ts";
 import type { OverlayMeta } from "../src/output/types.ts";
 import { createDefaultRedactor } from "../src/util/redact.ts";
 import { digestByKey } from "../src/quests/digest.ts";
@@ -84,6 +84,7 @@ async function harness(): Promise<Harness> {
   const sourceArchive = `${dir}/aca-v2.4.zip`;
   await Deno.writeFile(sourceArchive, source.bytes);
   const meta: OverlayMeta = {
+    artifact: "snbt-overlay",
     toolVersion: "1.1.0",
     generatedAt: "2026-08-25T00:00:00.000Z",
     sourceUrl: "https://example.invalid/aca.zip",
@@ -104,8 +105,8 @@ async function harness(): Promise<Harness> {
   const overlay = `${dir}/aca-2.4-ja_jp-en_us-override.zip`;
   await Deno.writeFile(
     overlay,
-    await buildOverlay({
-      translatedSnbt: JAPANESE,
+    await buildArtifact({
+      payload: JAPANESE,
       meta,
       report: finishedRun(),
       layout: "instance",

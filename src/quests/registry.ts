@@ -1,11 +1,18 @@
 import type { QuestFormatAdapter } from "./adapter.ts";
 import { ftbQuestsLangAdapter } from "./ftbquests_lang.ts";
+import { minecraftLangJsonAdapter } from "./lang_json.ts";
 
 /**
- * v1 registers one adapter. Adding `ftbquests-inline` or another quest mod is
- * a matter of appending to this list; nothing downstream changes.
+ * Order is priority: `selectAdapter` is only ever handed a pack's own quest
+ * localization file, and an SNBT lang file must keep resolving to the SNBT
+ * adapter. The JSON adapter is normally chosen explicitly (the caller has a
+ * `--lang-jar` and a namespace); it sits here so the registry is the one honest
+ * list of what this tool understands.
  */
-export const QUEST_ADAPTERS: readonly QuestFormatAdapter[] = [ftbQuestsLangAdapter];
+export const QUEST_ADAPTERS: readonly QuestFormatAdapter[] = [
+  ftbQuestsLangAdapter,
+  minecraftLangJsonAdapter,
+];
 
 export interface AdapterSelection {
   adapter?: QuestFormatAdapter;

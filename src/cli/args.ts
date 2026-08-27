@@ -13,6 +13,13 @@ export interface CliOptions {
   overrideEnglish: boolean;
   sourceLocale: string;
   layout: OverlayLayout;
+  /**
+   * Local mod jar providing `assets/<namespace>/lang/<source>.json`. Its presence
+   * is what selects resource-pack mode: never a guess about the pack.
+   */
+  langJar?: string;
+  langNamespace?: string;
+  packFormat?: number;
   provider: string;
   model: string;
   fallbackModel: string;
@@ -61,6 +68,9 @@ const VALUE_FLAGS = new Set([
   "--override-english",
   "--source-locale",
   "--layout",
+  "--lang-jar",
+  "--lang-namespace",
+  "--pack-format",
   "--provider",
   "--model",
   "--fallback-model",
@@ -194,6 +204,17 @@ const SIZE_UNITS: Record<string, number> = {
   gib: 1024 ** 3,
 };
 
+/**
+ * Ceiling for any byte-size flag.
+ *
+ * Every downstream limit is derived from `--max-download` -- the HTTP body cap,
+ * the `--lang-jar` cap, and the ZIP reader's total-inflation cap at four times
+ * this -- so a value that is not a finite, safe integer does not merely allow a
+ * large download: it silently switches those defences off. 16 GiB is far above
+ * any real modpack or mod jar, and four times it is still an exact integer.
+ */
+export const MAX_SIZE_BYTES = 16 * 1024 ** 3;
+
 function size(raw: RawArgs, name: string, fallback: number): number {
   const value = single(raw, name);
   if (value === undefined) return fallback;
@@ -203,7 +224,16 @@ function size(raw: RawArgs, name: string, fallback: number): number {
   const multiplier = unit === "" ? 1 : SIZE_UNITS[unit];
   if (multiplier === undefined) throw usage(`${name} has an unknown unit "${match[2]}"`);
   const bytes = Math.round(Number(match[1]) * multiplier);
-  if (bytes <= 0) throw usage(`${name} must be greater than zero`);
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    throw usage(`${name} must be greater than zero, got "${value}"`);
+  }
+  if (bytes > MAX_SIZE_BYTES) {
+    throw usage(
+      `${name} must be at most ${MAX_SIZE_BYTES} bytes (16GiB), got "${value}"`,
+      "The cap is what bounds the download, the --lang-jar read and the ZIP reader's " +
+        "total inflation, so it cannot be raised past the point where it stops being a number.",
+    );
+  }
   return bytes;
 }
 
@@ -278,6 +308,31 @@ export function parseArgs(
     throw usage(`--layout must be one of ${LAYOUTS.join(", ")}, got "${layout}"`);
   }
 
+  const langJar = single(raw, "--lang-jar");
+  const langNamespace = single(raw, "--lang-namespace");
+  const packFormatRaw = single(raw, "--pack-format");
+  for (
+    const [flag, value] of [["--lang-namespace", langNamespace], ["--pack-format", packFormatRaw]]
+  ) {
+    if (value !== undefined && langJar === undefined) {
+      throw usage(
+        `${flag} only applies with --lang-jar`,
+        "--lang-jar <mod.jar> selects resource-pack mode; without it the tool translates the " +
+          "pack's own config/ftbquests/quests/lang/<locale>.snbt.",
+      );
+    }
+  }
+  if (langJar !== undefined && single(raw, "--layout") !== undefined) {
+    throw usage(
+      "--layout does not apply with --lang-jar",
+      "A resource pack has exactly one layout: assets/<namespace>/lang/<locale>.json. " +
+        "--layout only chooses where an FTB Quests SNBT overlay is placed.",
+    );
+  }
+  const packFormat = packFormatRaw === undefined
+    ? undefined
+    : integer(raw, "--pack-format", 0, 1, 99);
+
   const provider = single(raw, "--provider") ?? "claude-code";
   if (!PROVIDERS.includes(provider)) {
     throw usage(`--provider must be one of ${PROVIDERS.join(", ")}, got "${provider}"`);
@@ -310,6 +365,9 @@ export function parseArgs(
     overrideEnglish,
     sourceLocale: (single(raw, "--source-locale") ?? "en_us").toLowerCase().replace(/-/g, "_"),
     layout,
+    langJar,
+    langNamespace,
+    packFormat,
     provider,
     model: single(raw, "--model") ?? preset.model,
     fallbackModel: single(raw, "--fallback-model") ?? preset.fallbackModel,

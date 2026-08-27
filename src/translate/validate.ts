@@ -1,5 +1,6 @@
-import { parseSnbt } from "../quests/snbt/mod.ts";
-import type { SnbtValue } from "../quests/snbt/mod.ts";
+import { describeShape } from "../quests/adapter.ts";
+import type { ExtractContext, QuestFormatAdapter, ValueShape } from "../quests/adapter.ts";
+import { ftbQuestsLangAdapter } from "../quests/ftbquests_lang.ts";
 import {
   countEscapedAmpersands,
   findFormattingCodes,
@@ -201,20 +202,27 @@ export function validateResponseIds(
   };
 }
 
-function shapeOf(value: SnbtValue): string {
-  return value.type === "array" ? `array[${value.items.length}]` : value.type;
-}
-
 /**
  * Whole-document validation: the output must parse, carry exactly the same key
  * set, and keep every value's shape. Run before anything is written.
+ *
+ * The format is the adapter's business -- SNBT compound, JSON object -- so this
+ * asks it for a key-to-shape map and compares the two. One comparison serves
+ * every format, which is why an SNBT array that came back a string and a JSON
+ * key that came back missing produce the same problem kinds.
  */
-export function validateDocument(source: string, output: string): ValidationResult {
+export function validateDocumentWith(
+  adapter: QuestFormatAdapter,
+  source: string,
+  output: string,
+  context?: ExtractContext,
+): ValidationResult {
   const problems: Problem[] = [];
 
-  let sourceRoot, outputRoot;
+  let sourceShapes: Map<string, ValueShape>;
+  let outputShapes: Map<string, ValueShape>;
   try {
-    sourceRoot = parseSnbt(source);
+    sourceShapes = adapter.shapes(source, context);
   } catch (error) {
     return {
       ok: false,
@@ -222,7 +230,9 @@ export function validateDocument(source: string, output: string): ValidationResu
     };
   }
   try {
-    outputRoot = parseSnbt(output);
+    // Deliberately unfiltered: the output is supposed to hold exactly the
+    // selected keys, so filtering it too would hide the extra ones.
+    outputShapes = adapter.shapes(output);
   } catch (error) {
     return {
       ok: false,
@@ -230,41 +240,41 @@ export function validateDocument(source: string, output: string): ValidationResu
     };
   }
 
-  const sourceMembers = new Map(sourceRoot.members.map((m) => [m.key, m.value]));
-  const outputMembers = new Map(outputRoot.members.map((m) => [m.key, m.value]));
-
-  for (const [key, value] of sourceMembers) {
-    const other = outputMembers.get(key);
+  for (const [key, shape] of sourceShapes) {
+    const other = outputShapes.get(key);
     if (other === undefined) {
       problems.push({ kind: "missing-key", message: `Key missing from output: ${key}`, id: key });
       continue;
     }
-    if (value.type !== other.type) {
+    if (shape.type !== other.type) {
       problems.push({
         kind: "value-type",
-        message: `Key ${key} changed shape from ${shapeOf(value)} to ${shapeOf(other)}`,
+        message: `Key ${key} changed shape from ${describeShape(shape)} to ${describeShape(other)}`,
         id: key,
       });
       continue;
     }
-    if (
-      value.type === "array" && other.type === "array" && value.items.length !== other.items.length
-    ) {
+    if (shape.length !== other.length) {
       problems.push({
         kind: "array-length",
-        message: `Key ${key} changed from ${value.items.length} to ${other.items.length} elements`,
+        message: `Key ${key} changed from ${shape.length} to ${other.length} elements`,
         id: key,
       });
     }
   }
 
-  for (const key of outputMembers.keys()) {
-    if (!sourceMembers.has(key)) {
+  for (const key of outputShapes.keys()) {
+    if (!sourceShapes.has(key)) {
       problems.push({ kind: "extra-key", message: `Key not present in source: ${key}`, id: key });
     }
   }
 
   return { ok: problems.length === 0, problems };
+}
+
+/** Whole-document validation for the FTB Quests SNBT lang format. */
+export function validateDocument(source: string, output: string): ValidationResult {
+  return validateDocumentWith(ftbQuestsLangAdapter, source, output);
 }
 
 /** `2 (\n, \r\n)` -- enough to see both how many and which. */

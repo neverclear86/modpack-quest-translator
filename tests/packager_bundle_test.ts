@@ -2,7 +2,7 @@ import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/
 import { AppError } from "../src/errors.ts";
 import { readZip } from "../src/archive/zip/reader.ts";
 import { writeZip, type ZipWriteEntry } from "../src/archive/zip/writer.ts";
-import { buildOverlay } from "../src/output/package.ts";
+import { buildArtifact } from "../src/output/package.ts";
 import type { OverlayMeta } from "../src/output/types.ts";
 import { createDefaultRedactor } from "../src/util/redact.ts";
 import { sha256Hex } from "../src/util/hash.ts";
@@ -24,6 +24,7 @@ const SOURCE = await sourceArchiveOf(ENGLISH);
 
 function meta(): OverlayMeta {
   return {
+    artifact: "snbt-overlay",
     toolVersion: "1.1.0",
     generatedAt: "2026-08-25T00:00:00.000Z",
     sourceUrl: "https://example.invalid/aca.zip",
@@ -47,8 +48,8 @@ function meta(): OverlayMeta {
 }
 
 async function realOverlay(layout: "instance" | "overrides" | "both"): Promise<Uint8Array> {
-  return await buildOverlay({
-    translatedSnbt: JAPANESE,
+  return await buildArtifact({
+    payload: JAPANESE,
     meta: meta(),
     report: finishedRun({ translated: 2 }),
     layout,

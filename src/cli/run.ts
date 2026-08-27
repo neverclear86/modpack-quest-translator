@@ -6,23 +6,36 @@ import { Reporter } from "./reporter.ts";
 import { BoundedHttpClient, type FetchLike } from "../net/http.ts";
 import { type ResolvedPack, resolveLocalArchive, resolvePack } from "../resolve/mod.ts";
 import { readZip } from "../archive/zip/reader.ts";
-import { discoverQuestSource } from "../archive/discover.ts";
+import {
+  discoverLangJsonSource,
+  discoverQuestSource,
+  type QuestSource,
+} from "../archive/discover.ts";
+import { type LoadedLangJar, loadLangJar } from "../archive/lang_jar.ts";
 import { buildChapterIndex } from "../quests/chapter_index.ts";
 import { digestByKey } from "../quests/digest.ts";
-import type { TranslationUnit } from "../quests/adapter.ts";
+import type { ExtractContext, TranslationUnit } from "../quests/adapter.ts";
+import { referencedKeysIn, type ReferenceScan } from "../quests/references.ts";
 import { buildBatches } from "../translate/batcher.ts";
 import { glossaryVersion, PROMPT_VERSION, TranslationCache } from "../translate/cache.ts";
 import { type TranslateReport, translateUnits } from "../translate/orchestrator.ts";
-import { validateDocument } from "../translate/validate.ts";
+import { validateDocumentWith } from "../translate/validate.ts";
 import { ClaudeCodeProvider } from "../translate/providers/claude_code.ts";
 import { EchoProvider } from "../translate/providers/echo.ts";
 import type { TranslationProvider } from "../translate/types.ts";
-import { buildManifest, buildOverlay, buildReport, resolveOutputPlan } from "../output/package.ts";
+import {
+  artifactEntryPaths,
+  buildArtifact,
+  buildManifest,
+  buildReport,
+  publishOutputs,
+  resolveOutputPlan,
+} from "../output/package.ts";
 import { buildReadme } from "../output/readme.ts";
-import type { OverlayLayout, OverlayMeta, UpdateDiff } from "../output/types.ts";
+import { packFormatFor, resourcePackLangPath } from "../output/resourcepack.ts";
+import type { ArtifactMeta, OverlayLayout, UpdateDiff } from "../output/types.ts";
 import { createDefaultRedactor, Redactor } from "../util/redact.ts";
 import { sha256Hex } from "../util/hash.ts";
-import { writeFileAtomic } from "../util/fs.ts";
 import type { CommandRunner } from "../util/command.ts";
 
 export interface RunDependencies {
@@ -125,9 +138,14 @@ async function execute(
   reporter.detail(`target locale: ${options.target.describe()}`);
   reporter.detail(
     options.overrideEnglish
-      ? "mode: english override (writes en_us.snbt)"
-      : `mode: target locale (writes ${options.target.locale}.snbt)`,
+      ? "mode: english override (writes the translation as en_us)"
+      : `mode: target locale (writes the translation as ${options.target.locale})`,
   );
+  if (options.langJar) {
+    reporter.detail(
+      `output: Minecraft resource pack, from translation keys backed by ${options.langJar}`,
+    );
+  }
   reporter.event({ type: "resolved", pack: describeForJson(pack) });
 
   // ---- download ------------------------------------------------------------
@@ -156,8 +174,28 @@ async function execute(
 
   // ---- inspect -------------------------------------------------------------
   const archive = await readZip(archiveBytes, { maxTotalBytes: options.maxDownloadBytes * 4 });
-  const source = await discoverQuestSource(archive, { sourceLocale: options.sourceLocale });
-  reporter.stage("inspect", `${source.flavour} archive, quest source ${source.path}`);
+
+  // The flag decides the mode. A pack that happens to ship both an SNBT lang
+  // file and placeholder chapters must not have the choice made for it.
+  let langJar: LoadedLangJar | undefined;
+  let source: QuestSource;
+  if (options.langJar !== undefined) {
+    langJar = await loadLangJar(options.langJar, options.maxDownloadBytes);
+    source = await discoverLangJsonSource(archive, langJar.archive, {
+      sourceLocale: options.sourceLocale,
+      namespace: options.langNamespace,
+    });
+  } else {
+    source = await discoverQuestSource(archive, { sourceLocale: options.sourceLocale });
+  }
+
+  reporter.stage(
+    "inspect",
+    langJar
+      ? `${source.flavour} archive, ${source.chapterFiles.length} quest file(s), ` +
+        `strings from ${langJar.fileName}!${source.path}`
+      : `${source.flavour} archive, quest source ${source.path}`,
+  );
   reporter.detail(
     source.questModVersion
       ? `FTB Quests ${source.questModVersion} detected${
@@ -165,24 +203,45 @@ async function execute(
       }`
       : "FTB Quests version could not be detected from the pack's file list",
   );
+  const references = source.references;
+  if (references) {
+    reporter.detail(
+      `namespace ${source.langNamespace}: ${references.keys.length} referenced key(s), ` +
+        `${source.presentKeys?.length ?? 0} defined, ${source.missingKeys?.length ?? 0} missing, ` +
+        `${references.literals.length} hard-coded label(s)`,
+    );
+    if (references.unparsed.length > 0) {
+      reporter.detail(`quest file(s) that did not parse: ${references.unparsed.join(", ")}`);
+    }
+  }
   if (source.alternates.length > 0) {
     reporter.detail(`also present (not used): ${source.alternates.join(", ")}`);
   }
 
   // ---- parse ---------------------------------------------------------------
-  const document = source.adapter.extract(source.text);
+  // In JSON mode the selection is the keys the quest files reference; in SNBT
+  // mode the file *is* the selection.
+  const extractContext: ExtractContext | undefined = source.presentKeys
+    ? { keys: source.presentKeys }
+    : undefined;
+  const document = source.adapter.extract(source.text, extractContext);
   const langStrings: Record<string, string> = {};
   for (const unit of document.units) {
     if (unit.index === -1) langStrings[unit.key] = unit.text;
   }
-  // One digest per SNBT key, covering array elements too. Stored in the
+  // One digest per source key, covering array elements too. Stored in the
   // manifest so a later run can diff added/changed/removed/reused keys without
   // the manifest carrying the whole source file.
   const sourceKeyDigests = digestByKey(document.units);
   const chapterIndex = buildChapterIndex(source.chapterFiles, langStrings);
+  const chapterByKey = references ? resolveChapterTitles(references, langStrings) : undefined;
   const units: TranslationUnit[] = document.units.map((unit) => ({
     ...unit,
-    chapter: unit.objectId ? chapterIndex.get(unit.objectId) : undefined,
+    chapter: chapterByKey
+      ? chapterByKey.get(unit.key)
+      : unit.objectId
+      ? chapterIndex.get(unit.objectId)
+      : undefined,
   }));
   const withChapter = units.filter((u) => u.chapter !== undefined).length;
 
@@ -226,7 +285,14 @@ async function execute(
   // pack's own manifest is the better source and must win.
   const registryAuthoritative = pack.source === "curseforge" || pack.source === "modrinth";
 
-  const meta: OverlayMeta = {
+  const packFormat = langJar
+    ? (options.packFormat !== undefined
+      ? { packFormat: options.packFormat, exact: true }
+      : packFormatFor(pack.minecraftVersion ?? source.packInfo.minecraftVersion))
+    : undefined;
+
+  const meta: ArtifactMeta = {
+    artifact: langJar ? "resource-pack" : "snbt-overlay",
     toolVersion: VERSION,
     generatedAt: now().toISOString(),
     sourceUrl: pack.sourceUrl,
@@ -251,6 +317,31 @@ async function execute(
     questModFile: source.questModFile,
     sourceKeyDigests,
     updateDiff,
+    resourcePack: langJar && packFormat
+      ? {
+        namespace: source.langNamespace!,
+        packFormat: packFormat.packFormat,
+        packFormatExact: packFormat.exact,
+        langPath: resourcePackLangPath(
+          source.langNamespace!,
+          options.overrideEnglish ? "en_us" : options.target.locale,
+        ),
+      }
+      : undefined,
+    // The jar's path on disk is deliberately not recorded: it can carry a user
+    // name, and the file's own name and hash are the provenance that matters.
+    sourceLangJar: langJar
+      ? { file: langJar.fileName, sha256: langJar.sha256, entry: source.path }
+      : undefined,
+    limitations: references
+      ? {
+        scannedQuestFiles: references.files.length,
+        referencedKeys: references.keys.length,
+        missingKeys: source.missingKeys ?? [],
+        literalLabels: references.literals,
+        unreadableQuestFiles: references.unparsed,
+      }
+      : undefined,
   };
 
   // ---- dry run -------------------------------------------------------------
@@ -260,16 +351,29 @@ async function execute(
       { maxItems: options.batchSize, maxChars: options.batchChars },
     );
     const plan = await resolveOutputPlan(options.output, meta, { force: true });
+    const entry = artifactEntryPaths(meta, layout)[0];
     reporter.stage("translate", "dry run: nothing was translated");
     reporter.detail(`${batches.length} batches would be sent to ${options.provider}`);
     reporter.detail(`archive would be written to ${plan.archivePath}`);
-    reporter.detail(`overlay entry: ${overlayEntry(meta, layout)}`);
+    reporter.detail(`${meta.artifact} entry: ${entry}`);
+    const discovery = references
+      ? {
+        namespace: source.langNamespace,
+        referenced: references.keys.length,
+        missing: source.missingKeys?.length ?? 0,
+        literals: references.literals.length,
+        questFiles: references.files.length,
+      }
+      : {};
     reporter.event({
       type: "dry-run",
+      artifact: meta.artifact,
       keys: document.keyCount,
       strings: units.length,
       batches: batches.length,
       archive: plan.archivePath,
+      entry,
+      ...discovery,
     });
     reporter.done({
       "dry run": "no archive was written",
@@ -277,12 +381,16 @@ async function execute(
       strings: units.length,
       batches: batches.length,
       archive: plan.archivePath,
+      ...discovery,
     });
     return;
   }
 
-  // Fail before spending anything if the output path is already taken.
-  const plan = await resolveOutputPlan(options.output, meta, { force: options.force });
+  // Fail before spending anything if any path the run will write is taken.
+  const plan = await resolveOutputPlan(options.output, meta, {
+    force: options.force,
+    emitRaw: options.emitRaw,
+  });
 
   // ---- translate -----------------------------------------------------------
   const provider = createProvider(options, deps);
@@ -322,8 +430,8 @@ async function execute(
   await cache.flush();
 
   // ---- validate ------------------------------------------------------------
-  const translatedSnbt = source.adapter.apply(source.text, translations);
-  const validation = validateDocument(source.text, translatedSnbt);
+  const payload = source.adapter.apply(source.text, translations, extractContext);
+  const validation = validateDocumentWith(source.adapter, source.text, payload, extractContext);
   if (!validation.ok) {
     throw new AppError(
       "E_VALIDATION",
@@ -351,22 +459,27 @@ async function execute(
     fallback: report.fallback,
   };
 
-  const archiveOut = await buildOverlay({ translatedSnbt, meta, report, layout, redactor });
-  await writeFileAtomic(plan.archivePath, archiveOut);
-  await writeFileAtomic(plan.manifestPath, buildManifest(meta, redactor));
-  await writeFileAtomic(plan.reportPath, buildReport(meta, report, redactor));
-  await writeFileAtomic(plan.readmePath, redactor.text(buildReadme(meta, layout)));
-  if (options.emitRaw) await writeFileAtomic(plan.rawSnbtPath, translatedSnbt);
+  const archiveOut = await buildArtifact({ payload, meta, report, layout, redactor });
+  // The plan's paths were free when the run started; that was a long time ago
+  // in a directory anything can write to, so each of these is published into a
+  // name nothing has taken rather than over whatever is there now.
+  await publishOutputs([
+    { path: plan.archivePath, data: archiveOut },
+    { path: plan.manifestPath, data: buildManifest(meta, redactor) },
+    { path: plan.reportPath, data: buildReport(meta, report, redactor) },
+    { path: plan.readmePath, data: redactor.text(buildReadme(meta, layout)) },
+    ...(options.emitRaw ? [{ path: plan.rawPayloadPath, data: payload }] : []),
+  ], { force: options.force });
 
   reporter.stage("package", `${plan.archivePath} (${formatBytes(archiveOut.length)})`);
-  reporter.detail(`overlay entry: ${overlayEntry(meta, layout)}`);
+  reporter.detail(`${meta.artifact} entry: ${artifactEntryPaths(meta, layout)[0]}`);
 
   reporter.done({
     archive: plan.archivePath,
     manifest: plan.manifestPath,
     reportPath: plan.reportPath,
     readme: plan.readmePath,
-    ...(options.emitRaw ? { raw: plan.rawSnbtPath } : {}),
+    ...(options.emitRaw ? { raw: plan.rawPayloadPath } : {}),
     translated: report.translated,
     cached: report.cached,
     skipped: report.skipped,
@@ -376,10 +489,30 @@ async function execute(
   });
 }
 
-function overlayEntry(meta: OverlayMeta, layout: Exclude<OverlayLayout, "auto">): string {
-  const name = `${meta.overrideEnglish ? "en_us" : meta.targetLocale}.snbt`;
-  const inner = `config/ftbquests/quests/lang/${name}`;
-  return layout === "overrides" ? `overrides/${inner}` : inner;
+/**
+ * Chapter context for JSON mode.
+ *
+ * The lang file has no quest-to-chapter edge and, unlike SNBT mode, no object
+ * ids to join on -- but the file a key was referenced from *is* its chapter.
+ * That file's own title is usually itself a placeholder, so it is resolved
+ * through the same lang strings before being used.
+ */
+function resolveChapterTitles(
+  references: ReferenceScan,
+  langStrings: Readonly<Record<string, string>>,
+): Map<string, string> {
+  const titleByFile = new Map<string, string>();
+  for (const [file, rawTitle] of references.titleByFile) {
+    const [key] = referencedKeysIn(rawTitle);
+    titleByFile.set(file, (key ? langStrings[key] : undefined) ?? rawTitle);
+  }
+
+  const byKey = new Map<string, string>();
+  for (const [key, file] of references.fileByKey) {
+    const title = titleByFile.get(file);
+    if (title) byKey.set(key, title);
+  }
+  return byKey;
 }
 
 function summarise(report: TranslateReport): Record<string, unknown> {

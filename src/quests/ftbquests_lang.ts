@@ -6,6 +6,7 @@ import type {
   QuestFormatAdapter,
   TranslatableDocument,
   TranslationUnit,
+  ValueShape,
 } from "./adapter.ts";
 import { protectedTokensOf } from "./tokens.ts";
 
@@ -66,6 +67,7 @@ function collect(root: SnbtCompound): TranslationUnit[] {
 export const ftbQuestsLangAdapter: QuestFormatAdapter = {
   id: "ftbquests-lang",
   description: "Modern FTB Quests localization file (config/ftbquests/quests/lang/*.snbt)",
+  payloadExtension: "snbt",
 
   detect(source: string): DetectionResult {
     let root: SnbtCompound;
@@ -97,6 +99,19 @@ export const ftbQuestsLangAdapter: QuestFormatAdapter = {
     const root = parseSnbt(source);
     const units = collect(root);
     return { units, keyCount: root.members.length };
+  },
+
+  shapes(source: string): Map<string, ValueShape> {
+    const shapes = new Map<string, ValueShape>();
+    for (const member of parseSnbt(source).members) {
+      shapes.set(
+        member.key,
+        isArray(member.value)
+          ? { type: "array", length: member.value.items.length }
+          : { type: member.value.type },
+      );
+    }
+    return shapes;
   },
 
   apply(source: string, translations: ReadonlyMap<string, string>): string {

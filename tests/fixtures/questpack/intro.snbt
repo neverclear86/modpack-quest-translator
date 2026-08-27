@@ -1,0 +1,44 @@
+{
+	default_hide_dependency_lines: false
+	default_quest_shape: ""
+	filename: "intro"
+	group: "410F2D717CE3690A"
+	icon: "ftbquests:book"
+	id: "707E49588E0C1D27"
+	images: [
+		{
+			height: 8.0d
+			image: "examplepack:textures/custom/headers/header_intro.png"
+			rotation: 0.0d
+			width: 32.0d
+			x: 0.0d
+			y: -8.0d
+		}
+	]
+	order_index: 0
+	quest_links: [ ]
+	quests: [{
+		description: [
+			"{quest.intro.hotkeys.description_1}"
+			""
+			"{quest.intro.hotkeys.description_2}"
+		]
+		id: "2BCF94B7693E4A8A"
+		rewards: [{
+			id: "195726CC3DB6A842"
+			item: "minecraft:apple"
+			type: "item"
+		}]
+		size: 2.0d
+		subtitle: "{quest.intro.hotkeys.subtitle}"
+		tasks: [{
+			id: "3A322087879D2C36"
+			type: "checkmark"
+		}]
+		title: "{quest.intro.hotkeys.title}"
+		x: 0.0d
+		y: -4.0d
+	}]
+	subtitle: ["{quest.intro.subtitle}"]
+	title: "{quest.intro}"
+}

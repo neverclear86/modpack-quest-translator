@@ -1,0 +1,41 @@
+{
+	default_quest_shape: "circle"
+	filename: "survival"
+	group: "4DDD3BC5FBA9AF8E"
+	id: "1111111111111111"
+	order_index: 1
+	quests: [
+		{
+			description: [
+				"{quest.guide.survival.fiber.description_1}"
+				"{quest.guide.survival.fiber.description_2}"
+				"{image:examplepack:textures/custom/info/info_1.png width:100 height:100 align:center}"
+			]
+			id: "AAAA000000000001"
+			size: 1.0d
+			subtitle: "{quest.guide.survival.fiber.subtitle}"
+			tasks: [{
+				id: "BBBB000000000001"
+				item: "minecraft:white_wool"
+				title: "Any #minecraft:wool"
+				type: "item"
+			}]
+			title: "{quest.guide.survival.fiber.title}"
+			x: -2.0d
+			y: 0.0d
+		}
+		{
+			description: ["{quest.guide.survival.tesla.description_1} "]
+			id: "AAAA000000000002"
+			tasks: [{
+				id: "BBBB000000000002"
+				type: "checkmark"
+			}]
+			title: "WIP"
+			x: 2.0d
+			y: 0.0d
+		}
+	]
+	subtitle: [ ]
+	title: "{quest.guide}"
+}

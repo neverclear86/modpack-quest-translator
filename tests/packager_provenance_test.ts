@@ -14,7 +14,7 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { AppError } from "../src/errors.ts";
 import { readZip } from "../src/archive/zip/reader.ts";
 import { writeZip } from "../src/archive/zip/writer.ts";
-import { buildOverlay } from "../src/output/package.ts";
+import { buildArtifact } from "../src/output/package.ts";
 import type { OverlayMeta } from "../src/output/types.ts";
 import type { TranslateReport } from "../src/translate/orchestrator.ts";
 import { buildInstallerBundle, type PackageBundleArgs } from "../src/packager/bundle.ts";
@@ -89,6 +89,7 @@ function sourceDigests(snbt: string): Record<string, string> {
 
 function meta(overrides: Partial<OverlayMeta> = {}): OverlayMeta {
   return {
+    artifact: "snbt-overlay",
     toolVersion: "1.1.1",
     generatedAt: "2026-08-25T00:00:00.000Z",
     sourceUrl: "https://example.invalid/aca.zip",
@@ -117,8 +118,8 @@ async function overlayOf(
   overrides: Partial<OverlayMeta> = {},
   report: TranslateReport = REPORT,
 ): Promise<Uint8Array> {
-  return await buildOverlay({
-    translatedSnbt: snbt,
+  return await buildArtifact({
+    payload: snbt,
     meta: meta(overrides),
     report,
     layout: "instance",
