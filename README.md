@@ -1,3 +1,10 @@
+> [!WARNING]
+> **このリポジトリのコード・ドキュメントは、現状ほとんどがAIによって作成されています。**
+> AI生成の内容には誤りや不具合が含まれる可能性があります。利用前に内容を確認し、重要なデータはバックアップしてください。
+>
+> **Most of the code and documentation in this repository are currently AI-generated.**
+> AI-generated content may contain errors or bugs. Review it before use and back up important data.
+
 # modpack-quest-translator
 
 Translate a Minecraft modpack's **FTB Quests** text into another language and emit a
