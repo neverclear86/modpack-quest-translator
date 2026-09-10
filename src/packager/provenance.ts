@@ -26,6 +26,13 @@ export interface TranslationFacts {
   generatedAt: string;
   /** The one install target this overlay is allowed to produce. */
   payloadPath: string;
+  /**
+   * The pack's own quest file as read out of the source archive, by digest and
+   * size. A script bundle pins these so the scripts can refuse a file that is
+   * not the one the translation was made from. Neither is prose.
+   */
+  sourceFileSha256: string;
+  sourceFileSizeBytes: number;
 }
 
 function refuse(message: string, hint?: string): AppError {
@@ -150,6 +157,8 @@ export async function verifyTranslationProvenance(args: {
     overrideEnglish,
     generatedAt,
     payloadPath: expected,
+    sourceFileSha256: source.sha256,
+    sourceFileSizeBytes: source.sizeBytes,
   };
 }
 
@@ -226,6 +235,9 @@ interface ReadSource {
   unitCount: number;
   /** Every string, with the id that says where in the file it sits. */
   units: readonly TranslationUnit[];
+  /** The file's exact bytes, identified without being carried. */
+  sha256: string;
+  sizeBytes: number;
 }
 
 /**
@@ -280,7 +292,8 @@ async function readRecordedSource(
     );
   }
 
-  const text = await archive.readText(recordedPath);
+  const bytes = await archive.read(recordedPath);
+  const text = new TextDecoder().decode(bytes);
   const detected = ftbQuestsLangAdapter.detect(text);
   if (!detected.supported) {
     throw refuse(
@@ -296,6 +309,8 @@ async function readRecordedSource(
     keyCount: document.keyCount,
     unitCount: document.units.length,
     units: document.units,
+    sha256: await sha256Hex(bytes),
+    sizeBytes: bytes.byteLength,
   };
 }
 

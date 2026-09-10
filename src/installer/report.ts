@@ -36,6 +36,7 @@ const ERROR_GLOSS: Record<ErrorCode, string> = {
   E_TARGET_MODIFIED: "導入後にファイルが変更されているため、中止しました",
   E_BACKUP: "使用できるバックアップが見つからないため、何も変更していません",
   E_NOT_INSTALLED: "このインスタンスには何も導入されていません",
+  E_SOURCE_MISMATCH: "パックのクエストファイルが、この翻訳の元になったものと一致しません",
   E_CANCELLED: "中断されました",
 };
 

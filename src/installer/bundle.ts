@@ -81,7 +81,15 @@ export interface BundleManifest {
   containsSourceProse: false;
   payload: BundlePayloadEntry[];
   binaries: BundleBinaryEntry[];
+  /**
+   * Which installer the bundle carries. Absent means `binaries`, the shape
+   * every bundle had before script bundles existed; the packager writes it
+   * explicitly for script bundles so this installer can refuse them.
+   */
+  installer?: InstallerKind;
 }
+
+export type InstallerKind = "binaries" | "scripts";
 
 export interface LoadedPayload extends BundlePayloadEntry {
   /** Absolute path of the payload file inside the bundle. */
@@ -165,6 +173,22 @@ export function parseBundleManifest(text: string): BundleManifest {
   if (formatVersion < BUNDLE_FORMAT_VERSION) {
     throw bundleError(
       `${BUNDLE_MANIFEST_NAME} declares the unsupported formatVersion ${formatVersion}`,
+    );
+  }
+
+  // A script bundle keeps its state in `.mqt-installer-scripts/`, this
+  // installer in `.mqt-installer/`. Driving one instance with both would leave
+  // two authorities on what the original file was, so each refuses the other's
+  // bundle rather than installing from it.
+  if (body.installer !== undefined && body.installer !== "binaries") {
+    throw bundleError(
+      `${BUNDLE_MANIFEST_NAME} declares installer ${JSON.stringify(body.installer)}; this ` +
+        `executable only installs bundles made for it`,
+      {
+        hint: body.installer === "scripts"
+          ? "This is a script bundle: run its INSTALL-WINDOWS.cmd or INSTALL-LINUX.sh instead."
+          : TAMPERED_HINT,
+      },
     );
   }
 

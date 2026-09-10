@@ -373,6 +373,12 @@ There are two ways in. The **installer bundle** is the one to hand a player: ext
 point it at the instance. It saves the pack's own quest file first and can put it back byte for
 byte. Everything else on this page is for the person who builds that bundle.
 
+The bundle comes in two kinds. The default carries a compiled executable per platform; the
+**script-only bundle** (`--installer scripts`, described in
+[its own section](#the-script-only-bundle-no-executables)) carries a Windows PowerShell 5.1 script
+and a POSIX `sh` script instead, for players who cannot or will not run an unsigned executable. Both
+are built from the same overlay by the same packager, and both keep the same promises about backups.
+
 ### The installer bundle — 日本語
 
 配布されるのは 1 つの ZIP です。展開すると次のものが入っています。
@@ -568,6 +574,77 @@ mqt-installer status    [--bundle <dir>] [--instance <path>] [--json]
 | 14   | Nothing from this bundle is installed                                      |
 | 130  | Interrupted                                                                |
 
+The script-only bundle below uses the same codes and adds one: `15`, the pack's quest file is not
+the one the translation was made from.
+
+### The script-only bundle (no executables)
+
+`deno task package-installer --installer scripts` builds a bundle with **no compiled binary**:
+
+```text
+<バンドル名>/
+  README.md                      日本語（簡潔）→ English (brief)
+  INSTALL-WINDOWS.cmd            Windows: 導入   (powershell.exe -NoProfile -ExecutionPolicy Bypass -File …)
+  UNINSTALL-WINDOWS.cmd          Windows: 削除
+  STATUS-WINDOWS.cmd             Windows: 状態表示（何も変更しない）
+  INSTALL-LINUX.sh               Linux: 導入     (sh scripts/mqt-installer.sh install …)
+  UNINSTALL-LINUX.sh             Linux: 削除
+  STATUS-LINUX.sh                Linux: 状態表示
+  scripts/mqt-installer.ps1      Windows PowerShell 5.1 (UTF-8 BOM, CRLF)
+  scripts/mqt-installer.sh       POSIX sh: dash, bash, busybox
+  scripts/installer.conf         key=value: payload path, SHA-256, size; the source file's SHA-256
+  payload/                       the translated file
+  bundle-manifest.json           as in the binary bundle, plus "installer": "scripts"
+  translation-manifest.json / translation-report.json
+```
+
+What a player needs: Windows 10/11 (Windows PowerShell 5.1 is built in), or Linux with `sh`,
+coreutils (`sha256sum` or `shasum`/`openssl`, `cp`, `mv`, `ln`, `mkdir`, `rm`, `wc`, `date`,
+`sync`), `grep` and `sed`. Nothing is downloaded and no other program is started.
+
+- **Windows execution policy.** The `.cmd` launchers run
+  `powershell.exe -NoProfile
+  -ExecutionPolicy Bypass -File scripts\mqt-installer.ps1 …`. `Bypass`
+  is process-scoped: no `Set-ExecutionPolicy`, no registry write, no persistent change. A Group
+  Policy that pins the policy, or Constrained Language Mode (AppLocker/WDAC), stops the script, and
+  the bundle offers no way around that. SmartScreen may still warn about a downloaded `.cmd`. The
+  bundle README says all of this in Japanese and tells the player to close Minecraft first.
+- **Same promises, separate state.** The scripts keep their records in
+  `<instance>/.mqt-installer-scripts/` — `backups/<name>.<sha12>.<kind>.bak` with a `.meta` sidecar,
+  `installed/<name>.meta`, `history.log` — never in the executable installer's `.mqt-installer/`.
+  Backups are named by digest, so a reinstall reuses the identical original and a different original
+  never collides. Every backup is verified by size and SHA-256 before a restore, and nothing in
+  `backups/` is ever deleted.
+- **Migration from the executable bundle is a refusal, on purpose.** If `.mqt-installer/state.json`
+  records an install of the target, or the target already holds a translation this installer has no
+  record and no backup of, the scripts exit 11 and say: run that bundle's UNINSTALL first. The
+  executable installer likewise refuses a bundle whose manifest says `installer: scripts`.
+- **The pack version is checked.** `installer.conf` pins the SHA-256 of the pack's own quest file as
+  read out of `--source-archive` at packaging time (a digest, not prose). A target that is neither
+  that file, nor one of this tool's payloads, nor an original already backed up is refused with exit
+  15; `--force` (`-Force`) backs it up and installs anyway.
+- **Writes.** Payloads and backups are written to a temporary file beside the destination, flushed
+  (`sync` on Linux, `Flush(true)` on Windows), verified by digest, then published without replacing:
+  the current file is renamed aside, digested against what the run agreed to replace, and the new
+  file is linked (`ln`) or moved (`File.Move`, which fails if the name is taken) into the now-absent
+  name. A file that appears in between wins and the run exits 12. A run killed in between leaves
+  `<target>.mqt-staged`, which the next run puts back, or keeps as a `displaced` backup if the name
+  has been taken since. Linux needs hard links (refused up front on FAT32); Windows has no directory
+  flush a user can call, so the directory entry is left to NTFS's journal.
+- **What the scripts do not do** that the executable does: bind a transaction to the directory's
+  identity (a directory swapped for a link between two syscalls is caught only at the next component
+  walk), and all-or-nothing across several payload files (every bundle this tool builds has one).
+  Both scripts are one translation of the same steps and are tested against each other.
+- Usage, directly:
+
+  ```text
+  sh scripts/mqt-installer.sh install|uninstall|status [<instance>] [--bundle <dir>] [--instance <path>] [--force] [--yes]
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts\mqt-installer.ps1 install|uninstall|status [-BundleDir <dir>] [-Instance <path>] [-Force] [-Yes]
+  ```
+
+  Without `--yes`/`-Yes` a terminal is asked `続行しますか / Continue? [y/N]`; with no terminal the
+  run proceeds, and a missing instance path is exit 2 rather than a hang.
+
 ### Installing the overlay by hand
 
 The raw overlay ZIP is still a plain overlay. Extract it into your Minecraft **instance root** — the
@@ -759,18 +836,19 @@ deno task bundle \
 `deno task bundle` is `build:installers` followed by `package-installer --binaries dist/bin`, so it
 needs `--overlay`, `--source-archive` and `--output`.
 
-| Flag                                               | Behaviour                                                                                                                   |
-| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `--overlay <zip>`                                  | Required. The raw overlay archive from a translation run                                                                    |
-| `--source-archive <zip>`                           | Required. The modpack archive that run read, byte for byte. See below                                                       |
-| `--output <zip\|dir>`                              | Required. A `.zip` path is that exact file; anything else is a directory, written as `<bundle-id>-installer.zip`            |
-| `--binaries <dir>`                                 | Directory holding the compiled installers, as produced by `deno task build:installers`                                      |
-| `--linux-binary <path>`, `--windows-binary <path>` | Explicit paths, overriding `--binaries`                                                                                     |
-| `--no-binaries`                                    | Package with no executables. The bundle README and manifest both say it cannot be double-clicked                            |
-| `--manifest`, `--report`                           | The translation sidecars, if not the copies inside the overlay or beside it                                                 |
-| `--bundle-id <id>`                                 | The top-level directory name inside the bundle. Letters, digits, `.`, `-` and `_` only. Defaults to the overlay's file stem |
-| `--generated-at <iso>`                             | Overrides the timestamp, which otherwise comes from the translation manifest                                                |
-| `--force`, `--json`, `--quiet`                     | As in the translator                                                                                                        |
+| Flag                                               | Behaviour                                                                                                                                                     |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--overlay <zip>`                                  | Required. The raw overlay archive from a translation run                                                                                                      |
+| `--source-archive <zip>`                           | Required. The modpack archive that run read, byte for byte. See below                                                                                         |
+| `--output <zip\|dir>`                              | Required. A `.zip` path is that exact file; anything else is a directory, written as `<bundle-id>-installer.zip`                                              |
+| `--binaries <dir>`                                 | Directory holding the compiled installers, as produced by `deno task build:installers`                                                                        |
+| `--linux-binary <path>`, `--windows-binary <path>` | Explicit paths, overriding `--binaries`                                                                                                                       |
+| `--no-binaries`                                    | Package with no executables. The bundle README and manifest both say it cannot be double-clicked                                                              |
+| `--installer scripts`                              | The [script-only bundle](#the-script-only-bundle-no-executables): PowerShell 5.1 + POSIX sh, written as `<bundle-id>-scripts.zip`. Excludes every binary flag |
+| `--manifest`, `--report`                           | The translation sidecars, if not the copies inside the overlay or beside it                                                                                   |
+| `--bundle-id <id>`                                 | The top-level directory name inside the bundle. Letters, digits, `.`, `-` and `_` only. Defaults to the overlay's file stem                                   |
+| `--generated-at <iso>`                             | Overrides the timestamp, which otherwise comes from the translation manifest                                                                                  |
+| `--force`, `--json`, `--quiet`                     | As in the translator                                                                                                                                          |
 
 The packager copies **only** entries the overlay holds under `config/ftbquests/quests/lang/`;
 anything else is refused with exit code 10. On its own that allowlist would not stop the pack's own
@@ -822,6 +900,23 @@ Deliberately not a `deno test`: it spawns real processes and runs the real compi
 against a real instance tree — install, reinstall, a payload edited without its manifest, uninstall,
 byte-for-byte restore — and asserts the Windows executable is a PE image. Windows _runtime_
 behaviour is not tested from Linux and no such claim is made.
+
+The script-only bundle has its own gate:
+
+```bash
+deno task e2e:scripts --bundle-zip ./dist/<id>-scripts.zip --source-archive ./aca-v2.4.zip \
+  [--pwsh /path/to/pwsh] [--sh dash|bash] [--keep]
+```
+
+It extracts the bundle under a path with a space and Japanese in it and drives
+`scripts/mqt-installer.sh` under `dash` and `bash` — and `scripts/mqt-installer.ps1` under `pwsh`
+when one is given or on `PATH` — through the happy path and every refusal: wrong directory, wrong
+pack version, edited install, symlinked target, lang directory and state directory, tampered payload
+and conf, truncated and missing backups, lost records, two candidate originals, an instance the
+executable installer set up, staged leftovers, and an upgrade. A `pwsh` run on Linux proves the
+PowerShell logic against the same filesystem as the sh script; it is **not** Windows PowerShell 5.1,
+NTFS or `cmd.exe`, and the `.cmd` launchers are checked only by the unit tests for quoting, `-File`,
+`-NoProfile` and a process-scoped `-ExecutionPolicy Bypass`.
 
 See [DESIGN.md](DESIGN.md) for the architecture and the reasoning behind each decision, and
 [REQUIREMENTS.md](REQUIREMENTS.md) for the approved scope.

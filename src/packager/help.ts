@@ -23,6 +23,14 @@ BINARIES
   --no-binaries          Build a bundle with no executables. It cannot be
                          installed by double-clicking, and the manifest and
                          README both say so.
+  --installer scripts    Ship no executables at all: a Windows PowerShell 5.1
+                         script behind .cmd launchers (process-scoped
+                         -ExecutionPolicy Bypass, no policy change) and a POSIX
+                         sh script behind .sh launchers. The output is named
+                         <bundle-id>-scripts.zip. Excludes every flag above.
+                         Its state lives in <instance>/.mqt-installer-scripts/,
+                         and it refuses an instance the executable installer
+                         set up until that bundle's UNINSTALL has run.
 
 OTHER
   --manifest <path>      translation-manifest.json, if not the copy inside the

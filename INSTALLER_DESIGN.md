@@ -835,3 +835,66 @@ directory — refusing a source archive that is not the one the run read on the 
 from it with the real compiled binary — all on the latest Deno 2 only. Deno 1 is not supported and
 not tested: the compatibility shim is gone from `src/util/fs.ts` (a test asserts no such shim is
 reachable) and the Deno 1 claims are gone from `DESIGN.md` and `README.md`.
+
+---
+
+## 10. The script-only bundle
+
+`package-installer --installer scripts` builds a second kind of bundle from the same overlay, for
+players who cannot or will not run an unsigned executable. It carries no binary at all: a Windows
+PowerShell 5.1 script (`scripts/mqt-installer.ps1`) behind `.cmd` launchers and a POSIX `sh` script
+(`scripts/mqt-installer.sh`) behind `.sh` launchers, plus a flat `scripts/installer.conf` that both
+read instead of `bundle-manifest.json` — `sh` has no JSON parser, and a PowerShell script that
+parsed the JSON would differ from the sh one in exactly the place a bug would hide. The manifest is
+still written, with `"installer": "scripts"`, and the executable installer **refuses** it (§3.1),
+just as the scripts refuse an instance the executable set up.
+
+### 10.1 What is kept, and what is simplified
+
+The scripts keep the promises that matter and say plainly where they are weaker than §6:
+
+| §2.2 hazard                          | Scripts                                                                                                                                                                                                                                                    |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 traversal in the payload path      | `installer.conf` path must match `config/ftbquests/quests/lang/[A-Za-z0-9._-]+\.snbt` in both scripts; the packager's parser applies `assertPayloadPath` to the same file                                                                                  |
+| 2 damaged payload                    | Size and SHA-256 checked against the conf before anything is touched                                                                                                                                                                                       |
+| 3 wrong folder                       | `mods/` and `config/` must be real directories; `.minecraft`/`minecraft` auto-descend                                                                                                                                                                      |
+| 4, 4b symlinks                       | Every existing component of the target and of `.mqt-installer-scripts/…` is walked and refused if it is a symlink (`-L`) or a reparse point (`ReparsePoint` attribute), before each read and write boundary; directories are created one level at a time   |
+| 5 escape                             | `pwd -P` of the target directory must be under `pwd -P` of the instance (sh); the resolved full name must be under the root (PowerShell). With no `..` and no links this holds by construction                                                             |
+| 6 interruption                       | Temp file beside the destination → flush (`sync FILE`, `Flush($true)`) → verify digest → publish; leftovers named `<target>.mqt-staged` are put back or kept as a `displaced` backup on the next run                                                       |
+| 7 backup overwritten by a payload    | A file whose digest is the bundle's payload is never captured; backups are **named by digest** (`<name>.<sha12>.<kind>.bak`), so an identical original is reused and a different one never collides                                                        |
+| 8 damaged backup                     | Size and SHA-256 against the `.meta` sidecar and against the install record, before a byte moves; `E_BACKUP` otherwise                                                                                                                                     |
+| 9 edited install                     | Digest ≠ recorded → `E_TARGET_MODIFIED`; `--force` captures a `modified` backup first                                                                                                                                                                      |
+| 9b last-microsecond writer           | The target is renamed aside, digested against the plan, and the new file is published with `ln` (sh) or `File.Move` (PowerShell), both of which fail rather than replace. Hard links are probed first on Linux and their absence is `E_WRITE`              |
+| 9c directory swapped mid-transaction | **Not bound.** A `sh` script has no inode handle to bind to; the component walk is repeated before each boundary, which catches a swap between boundaries and not one between two syscalls. Documented in the README as the difference from the executable |
+| 10 source prose                      | The packager's provenance check is unchanged; the conf carries only the source file's SHA-256 and size                                                                                                                                                     |
+| 11 the installer does something else | The scripts run no other program, open no socket, and the `.cmd` uses `-File` (never `-Command`) with `-NoProfile`                                                                                                                                         |
+| new: wrong pack version              | The conf pins the source quest file's digest as read out of `--source-archive`. A target that is neither that file, nor a payload of this tool, nor an original already held is `E_SOURCE_MISMATCH` (15); `--force` backs it up and proceeds               |
+| new: migrating from the executable   | `.mqt-installer/state.json` naming the target, or the payload in place with neither a record nor a backup of ours, is `E_INSTANCE` with "run that bundle's UNINSTALL first". Nothing is ever read from the executable's backups                            |
+
+State lives in `<instance>/.mqt-installer-scripts/` — `backups/`, `installed/<name>.meta`,
+`history.log` — in `key=value` files that both scripts write identically. A lost install record with
+exactly one `original`/`absent` backup for the target is adopted; two candidates is `E_BACKUP`,
+never a guess (§7.1 applies unchanged).
+
+### 10.2 Windows specifics
+
+- `powershell.exe -NoProfile -NoLogo -ExecutionPolicy Bypass -File …`. `Bypass` is process-scoped;
+  nothing runs `Set-ExecutionPolicy` or `Unblock-File`, and a machine policy that pins the setting
+  wins. The README says so and offers no workaround, deliberately.
+- The `.ps1` is written with a UTF-8 BOM and CRLF, because 5.1 reads a BOM-less file in the system
+  code page. `[Console]::OutputEncoding` is set to UTF-8 and the `.cmd` runs `chcp 65001`.
+- Every cmdlet takes `-LiteralPath`; every path is joined with the platform separator, so the same
+  file runs under `pwsh` on Linux for the tests.
+- Windows has no user-callable directory flush (§6.1), so the directory entry is left to NTFS.
+- `File.Replace(tmp, record, [NullString]::Value)` for the install record: PowerShell turns a bare
+  `$null` into an empty string for that parameter, which the `pwsh` run of the gate caught.
+
+### 10.3 Testing, and what is not claimed
+
+Unit tests cover the packager side: layout, determinism, modes, the conf round trip and its
+refusals, the manifest field and the executable's refusal of it, launcher quoting and flags. The
+gate `deno task e2e:scripts` runs the sh script under `dash` and `bash`, and the PowerShell script
+under `pwsh` when one is available, through every row of the table above against a real bundle and
+the real source archive, on an instance path with a space and Japanese in it. A `pwsh` run on Linux
+is evidence about the script's logic on a POSIX filesystem; it is **not** Windows PowerShell 5.1,
+NTFS reparse points or `cmd.exe`, and the `.cmd` launchers have been checked only statically.

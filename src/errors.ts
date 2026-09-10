@@ -15,6 +15,8 @@ export const EXIT_CODES = {
   E_TARGET_MODIFIED: 12,
   E_BACKUP: 13,
   E_NOT_INSTALLED: 14,
+  /** Script installer only: the file in the instance is not the one the translation was made from. */
+  E_SOURCE_MISMATCH: 15,
   E_CANCELLED: 130,
 } as const;
 

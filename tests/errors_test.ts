@@ -16,6 +16,7 @@ Deno.test("exit codes match the documented table", () => {
   assertEquals(EXIT_CODES.E_TARGET_MODIFIED, 12);
   assertEquals(EXIT_CODES.E_BACKUP, 13);
   assertEquals(EXIT_CODES.E_NOT_INSTALLED, 14);
+  assertEquals(EXIT_CODES.E_SOURCE_MISMATCH, 15);
   assertEquals(EXIT_CODES.E_CANCELLED, 130);
 });
 

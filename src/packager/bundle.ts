@@ -6,6 +6,7 @@ import {
   BUNDLE_MANIFEST_NAME,
   type BundleBinaryEntry,
   type BundleManifest,
+  type InstallerKind,
   isPlainBundleId,
   PAYLOAD_DIR,
   QUEST_LANG_DIR,
@@ -19,6 +20,17 @@ import {
   verifyTranslationProvenance,
 } from "./provenance.ts";
 import { buildBundleReadme } from "./readme.ts";
+import { buildInstallerConf, INSTALLER_CONF_NAME } from "./scripts/conf.ts";
+import {
+  POSIX_SCRIPT_NAME,
+  POWERSHELL_SCRIPT_NAME,
+  scriptLinuxLauncher,
+  SCRIPTS_DIR,
+  scriptWindowsLauncher,
+} from "./scripts/launchers.ts";
+import { POSIX_INSTALLER_SCRIPT } from "./scripts/posix.ts";
+import { POWERSHELL_INSTALLER_SCRIPT } from "./scripts/powershell.ts";
+import { buildScriptBundleReadme } from "./scripts/readme.ts";
 
 export { TRANSLATION_MANIFEST_NAME, TRANSLATION_REPORT_NAME };
 
@@ -48,6 +60,12 @@ export interface PackageBundleArgs {
    */
   generatedAt?: string;
   binaries: PackagedBinary[];
+  /**
+   * `binaries` (the default) ships the compiled executables in `binaries`;
+   * `scripts` ships the PowerShell and sh installers instead and ignores
+   * `binaries`, which must then be empty.
+   */
+  installer?: InstallerKind;
   /**
    * The modpack archive the translation run read. Not optional: without it the
    * only account of what the source said is the manifest sitting next to the
@@ -147,6 +165,11 @@ export async function buildInstallerBundle(args: PackageBundleArgs): Promise<Bui
     ? source.generatedAt
     : isoTimestamp(args.generatedAt, "--generated-at");
 
+  const installer: InstallerKind = args.installer ?? "binaries";
+  if (installer === "scripts" && args.binaries.length > 0) {
+    throw packageError("A script bundle carries no executables, but binaries were given");
+  }
+
   const payloadPaths = [...payloads.keys()].sort();
   const manifest: BundleManifest = {
     formatVersion: BUNDLE_FORMAT_VERSION,
@@ -174,27 +197,18 @@ export async function buildInstallerBundle(args: PackageBundleArgs): Promise<Bui
         sha256: await sha256Hex(binary.bytes),
       })),
     ),
+    // Written only for script bundles, so a manifest without the field keeps
+    // meaning what it always meant.
+    ...(installer === "scripts" ? { installer } : {}),
   };
 
-  const entries: ZipWriteEntry[] = [
-    { path: `${args.bundleId}/README.md`, text: buildBundleReadme(manifest) },
-    { path: `${args.bundleId}/INSTALL-WINDOWS.cmd`, text: windowsLauncher("install") },
-    { path: `${args.bundleId}/UNINSTALL-WINDOWS.cmd`, text: windowsLauncher("uninstall") },
-    {
-      path: `${args.bundleId}/INSTALL-LINUX.sh`,
-      text: linuxLauncher("install"),
-      mode: EXECUTABLE_MODE,
-    },
-    {
-      path: `${args.bundleId}/UNINSTALL-LINUX.sh`,
-      text: linuxLauncher("uninstall"),
-      mode: EXECUTABLE_MODE,
-    },
-    {
-      path: `${args.bundleId}/${BUNDLE_MANIFEST_NAME}`,
-      text: `${JSON.stringify(manifest, null, 2)}\n`,
-    },
-  ];
+  const entries: ZipWriteEntry[] = installer === "scripts"
+    ? scriptEntries(args.bundleId, manifest, source)
+    : binaryEntries(args.bundleId, manifest);
+  entries.push({
+    path: `${args.bundleId}/${BUNDLE_MANIFEST_NAME}`,
+    text: `${JSON.stringify(manifest, null, 2)}\n`,
+  });
 
   if (translationManifest !== undefined) {
     entries.push({
@@ -218,6 +232,64 @@ export async function buildInstallerBundle(args: PackageBundleArgs): Promise<Bui
 
   const bytes = await writeZip(entries);
   return { bytes, manifest, entries: entries.map((entry) => entry.path).sort() };
+}
+
+function binaryEntries(bundleId: string, manifest: BundleManifest): ZipWriteEntry[] {
+  return [
+    { path: `${bundleId}/README.md`, text: buildBundleReadme(manifest) },
+    { path: `${bundleId}/INSTALL-WINDOWS.cmd`, text: windowsLauncher("install") },
+    { path: `${bundleId}/UNINSTALL-WINDOWS.cmd`, text: windowsLauncher("uninstall") },
+    { path: `${bundleId}/INSTALL-LINUX.sh`, text: linuxLauncher("install"), mode: EXECUTABLE_MODE },
+    {
+      path: `${bundleId}/UNINSTALL-LINUX.sh`,
+      text: linuxLauncher("uninstall"),
+      mode: EXECUTABLE_MODE,
+    },
+  ];
+}
+
+/** UTF-8 with a BOM and CRLF, which is what Windows PowerShell 5.1 reads correctly. */
+function powershellBytes(text: string): Uint8Array {
+  const body = new TextEncoder().encode(text.replace(/\r?\n/g, "\r\n"));
+  const out = new Uint8Array(3 + body.byteLength);
+  out.set([0xef, 0xbb, 0xbf], 0);
+  out.set(body, 3);
+  return out;
+}
+
+function scriptEntries(
+  bundleId: string,
+  manifest: BundleManifest,
+  source: { sourceFileSha256: string; sourceFileSizeBytes: number },
+): ZipWriteEntry[] {
+  const entries: ZipWriteEntry[] = [
+    { path: `${bundleId}/README.md`, text: buildScriptBundleReadme(manifest) },
+    {
+      path: `${bundleId}/${SCRIPTS_DIR}/${POWERSHELL_SCRIPT_NAME}`,
+      data: powershellBytes(POWERSHELL_INSTALLER_SCRIPT),
+    },
+    {
+      path: `${bundleId}/${SCRIPTS_DIR}/${POSIX_SCRIPT_NAME}`,
+      text: POSIX_INSTALLER_SCRIPT,
+      mode: EXECUTABLE_MODE,
+    },
+    {
+      path: `${bundleId}/${SCRIPTS_DIR}/${INSTALLER_CONF_NAME}`,
+      text: buildInstallerConf(manifest, source),
+    },
+  ];
+  for (const command of ["install", "uninstall", "status"] as const) {
+    const upper = command.toUpperCase();
+    entries.push(
+      { path: `${bundleId}/${upper}-WINDOWS.cmd`, text: scriptWindowsLauncher(command) },
+      {
+        path: `${bundleId}/${upper}-LINUX.sh`,
+        text: scriptLinuxLauncher(command),
+        mode: EXECUTABLE_MODE,
+      },
+    );
+  }
+  return entries;
 }
 
 /** The instance-relative destination for an overlay entry, or undefined. */

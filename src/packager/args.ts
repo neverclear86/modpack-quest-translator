@@ -1,4 +1,5 @@
 import { AppError } from "../errors.ts";
+import type { InstallerKind } from "../installer/bundle.ts";
 
 export type PackagerMode = "package" | "help" | "version";
 
@@ -14,6 +15,11 @@ export interface PackagerOptions {
   linuxBinary?: string;
   windowsBinary?: string;
   noBinaries: boolean;
+  /**
+   * `binaries` ships compiled executables; `scripts` ships a PowerShell 5.1
+   * script and a POSIX sh script instead, so the player needs no binary at all.
+   */
+  installer: InstallerKind;
   bundleId?: string;
   /** ISO-8601 override; otherwise taken from the translation manifest. */
   generatedAt?: string;
@@ -34,6 +40,7 @@ const VALUE_FLAGS = new Set([
   "--windows-binary",
   "--bundle-id",
   "--generated-at",
+  "--installer",
 ]);
 
 const BOOLEAN_FLAGS = new Set([
@@ -104,6 +111,22 @@ export function parsePackagerArgs(argv: readonly string[]): PackagerOptions {
     );
   }
 
+  const installerRaw = values.get("--installer") ?? "binaries";
+  if (installerRaw !== "binaries" && installerRaw !== "scripts") {
+    throw usage(
+      `--installer ${JSON.stringify(installerRaw)} is not a kind of installer`,
+      "Use --installer binaries (compiled executables) or --installer scripts (PowerShell + sh).",
+    );
+  }
+  const installer: InstallerKind = installerRaw;
+  if (installer === "scripts" && (noBinaries || linuxBinary || windowsBinary || binariesDir)) {
+    throw usage(
+      "--installer scripts ships no executables, so --binaries, --linux-binary, " +
+        "--windows-binary and --no-binaries do not apply",
+      "Drop the binary flags, or drop --installer scripts.",
+    );
+  }
+
   return {
     mode: "package",
     overlay,
@@ -115,6 +138,7 @@ export function parsePackagerArgs(argv: readonly string[]): PackagerOptions {
     ...(linuxBinary !== undefined ? { linuxBinary } : {}),
     ...(windowsBinary !== undefined ? { windowsBinary } : {}),
     noBinaries,
+    installer,
     ...optional(values, "--bundle-id", "bundleId"),
     ...optional(values, "--generated-at", "generatedAt"),
     force: switches.has("--force"),
@@ -139,6 +163,7 @@ function blank(mode: PackagerMode): PackagerOptions {
     output: "",
     sourceArchive: "",
     noBinaries: false,
+    installer: "binaries",
     force: false,
     json: false,
     quiet: false,

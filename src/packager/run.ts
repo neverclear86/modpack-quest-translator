@@ -47,7 +47,7 @@ export async function runPackager(
     const overlay = await readRequired(options.overlay, "--overlay");
     const sourceArchive = await readRequired(options.sourceArchive, "--source-archive");
     const bundleId = options.bundleId ?? defaultBundleId(options.overlay);
-    const binaries = await collectBinaries(options);
+    const binaries = options.installer === "scripts" ? [] : await collectBinaries(options);
 
     const manifestText = await readSidecar(options, "manifest", TRANSLATION_MANIFEST_NAME);
     const reportText = await readSidecar(options, "report", TRANSLATION_REPORT_NAME);
@@ -58,12 +58,17 @@ export async function runPackager(
       toolVersion: VERSION,
       ...(options.generatedAt !== undefined ? { generatedAt: options.generatedAt } : {}),
       binaries,
+      installer: options.installer,
       sourceArchive,
       ...(manifestText !== undefined ? { translationManifest: manifestText } : {}),
       ...(reportText !== undefined ? { translationReport: reportText } : {}),
     });
 
-    const output = await resolveOutput(options.output, bundleId, options.force);
+    const output = await resolveOutput(
+      options.output,
+      `${bundleId}-${options.installer === "scripts" ? "scripts" : "installer"}.zip`,
+      options.force,
+    );
     await writeFileAtomic(output, built.bytes);
     const digest = await sha256Hex(built.bytes);
 
@@ -72,6 +77,7 @@ export async function runPackager(
         {
           ok: true,
           bundleId,
+          installer: options.installer,
           output,
           sha256: digest,
           sizeBytes: built.bytes.byteLength,
@@ -88,8 +94,10 @@ export async function runPackager(
       stdout(`  sha256     ${digest}`);
       stdout(`  payload    ${built.manifest.payload.map((entry) => entry.path).join(", ")}`);
       stdout(
-        `  binaries   ${
-          built.manifest.binaries.length === 0
+        `  installer  ${
+          options.installer === "scripts"
+            ? "scripts (PowerShell 5.1 + POSIX sh; no executables)"
+            : built.manifest.binaries.length === 0
             ? "none -- this bundle cannot be installed by double-clicking"
             : built.manifest.binaries.map((entry) => entry.target).join(", ")
         }`,
@@ -172,11 +180,11 @@ async function collectBinaries(options: PackagerOptions): Promise<PackagedBinary
 }
 
 /** `.zip` names the exact file; anything else is a directory to write into. */
-async function resolveOutput(output: string, bundleId: string, force: boolean): Promise<string> {
+async function resolveOutput(output: string, fileName: string, force: boolean): Promise<string> {
   const trimmed = output.replace(/[/\\]+$/, "");
   if (trimmed.length === 0) throw new AppError("E_INVALID_INPUT", "--output is empty");
 
-  const path = /\.zip$/i.test(trimmed) ? trimmed : joinPath(trimmed, `${bundleId}-installer.zip`);
+  const path = /\.zip$/i.test(trimmed) ? trimmed : joinPath(trimmed, fileName);
   if (!force && await pathExists(path)) {
     throw new AppError("E_WRITE", `Refusing to overwrite the existing file ${path}`, {
       hint: "Pass --force to overwrite, or choose a different --output.",

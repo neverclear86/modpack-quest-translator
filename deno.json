@@ -3,7 +3,7 @@
   "version": "1.1.2",
   "exports": "./src/cli/main.ts",
   "tasks": {
-    "check": "deno check src/cli/main.ts src/installer/main.ts src/packager/main.ts tools/bundle_e2e.ts",
+    "check": "deno check src/cli/main.ts src/installer/main.ts src/packager/main.ts tools/bundle_e2e.ts tools/script_installer_e2e.ts",
     "test": "deno test -A",
     "fmt": "deno fmt",
     "lint": "deno lint",
@@ -14,6 +14,7 @@
     "package-installer": "deno run --allow-read --allow-write src/packager/main.ts",
     "bundle": "deno task build:installers && deno run --allow-read --allow-write src/packager/main.ts --binaries dist/bin",
     "e2e:bundle": "deno run -A tools/bundle_e2e.ts",
+    "e2e:scripts": "deno run -A tools/script_installer_e2e.ts",
     "verify": "deno fmt --check && deno lint && deno task check && deno test -A"
   },
   "imports": {
